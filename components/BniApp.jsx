@@ -1170,6 +1170,94 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
     e.target.value = ""; // allow re-selecting the same file
   };
 
+  // ═══════════════════════════════════════════
+  // PASTE-TO-ADD — paste the visitor list straight from BNI Connect
+  // ═══════════════════════════════════════════
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pastePreview, setPastePreview] = useState(null);
+  const pasteCategoryOptions = [...new Set([...members.map(m => m.category), ...ALL_BNI_CATEGORIES])].sort();
+  const sortedMembers = [...members].sort((a, b) => a.name.localeCompare(b.name));
+
+  const parsePastedList = () => {
+    const isDate = (l) => /^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/.test(l);
+    const isEmail = (l) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(l);
+    const isPhone = (l) => /^[+\d][\d\s\-()]{6,}$/.test(l);
+    const lines = pasteText.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^(edit|delete)$/i.test(l));
+
+    const records = [];
+    let cur = { pre: [], date: "", phone: "", email: "" };
+    const flush = () => {
+      if (cur.pre.length || cur.date || cur.phone || cur.email) records.push(cur);
+      cur = { pre: [], date: "", phone: "", email: "" };
+    };
+    for (const l of lines) {
+      if (isDate(l)) { if (cur.date) flush(); cur.date = l; continue; }
+      if (isEmail(l)) { cur.email = l; flush(); continue; }           // email closes a record
+      if (isPhone(l) && (cur.date || cur.pre.length >= 3)) { if (cur.phone) flush(); cur.phone = l; continue; }
+      if (cur.date || cur.phone || cur.email) flush();                // plain text after data = next visitor
+      cur.pre.push(l);
+    }
+    flush();
+
+    const rows = records.filter(r => r.pre.length || r.phone || r.email).map(r => {
+      const name = r.pre[0] || "";
+      let business = r.pre.length >= 3 ? r.pre[1] : "";
+      const specialty = r.pre.length >= 3 ? r.pre.slice(2).join(" ") : (r.pre[1] || "");
+      if (/^no company$/i.test(business)) business = "";
+      const date = normalizeExcelDate(r.date);
+      const warnings = [];
+      let status = "ok";
+      if (!name) { status = "error"; warnings.push("Could not detect a name"); }
+      if (!business) warnings.push("No company");
+      if (new Date(date).getDay() !== 3) warnings.push(`${date} is not a Wednesday`);
+      const dup = visitors.find(v =>
+        (r.phone && v.phone && v.phone.replace(/\D/g, "").slice(-9) === r.phone.replace(/\D/g, "").slice(-9)) ||
+        (r.email && v.email && v.email.toLowerCase() === r.email.toLowerCase()) ||
+        (name && v.name.toLowerCase() === name.toLowerCase() && (v.business || "").toLowerCase() === business.toLowerCase())
+      );
+      if (dup) { status = "duplicate"; warnings.push(`Already in list as "${dup.name}"`); }
+      if (status === "ok" && warnings.length) status = "warning";
+      return { name, business, specialty, phone: r.phone, email: r.email, date, invitedBy: "", category: "", status, warnings };
+    });
+
+    if (!rows.length) { alert("Couldn't detect any visitors in that text. Paste the list exactly as copied from BNI Connect."); return; }
+    setPastePreview(rows);
+    setShowPaste(false);
+  };
+
+  const setPasteField = (i, field, val) => setPastePreview(p => p.map((r, idx) => idx === i ? { ...r, [field]: val } : r));
+  const setAllInviters = (name) => setPastePreview(p => p.map(r => (r.status === "ok" || r.status === "warning") ? { ...r, invitedBy: name } : r));
+
+  const confirmPasteImport = async () => {
+    const toImport = pastePreview.filter(r => r.status === "ok" || r.status === "warning");
+    if (!toImport.length) { setPastePreview(null); return; }
+    setImporting(true);
+    try {
+      const { data, error } = await supabase.from("visitors").insert(
+        toImport.map(r => ({
+          name: r.name, business: r.business, phone: r.phone, email: r.email,
+          invited_by: r.invitedBy, category: r.category, specialty: r.specialty,
+          date: r.date, status: "registered",
+          call_notes: "", seat_assignment: "", follow_up_response: null, bio: null,
+        }))
+      ).select();
+      if (error) throw error;
+      if (data?.length) {
+        setVisitors(p => [...p, ...data.map(v => ({
+          ...v, invitedBy: v.invited_by, callNotes: v.call_notes,
+          seatAssignment: v.seat_assignment, followUpResponse: v.follow_up_response,
+        }))]);
+      }
+      setPastePreview(null);
+      setPasteText("");
+    } catch (err) {
+      console.error("Paste import failed:", err);
+      alert("Import failed — nothing was saved. Check your connection and try again.");
+    }
+    setImporting(false);
+  };
+
   const confirmImport = async () => {
     const toImport = importPreview.filter(r => r.status === "ok" || r.status === "warning");
     if (!toImport.length) { setImportPreview(null); return; }
@@ -1229,6 +1317,7 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
         {viewMode === "list" && (
           <>
             <button onClick={downloadTemplate} title="Download a blank Excel template" style={{ background: "#fff", color: "#1B2A4A", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬇️ Template</button>
+            <button onClick={() => { setShowPaste(!showPaste); setPastePreview(null); }} title="Paste the visitor list copied from BNI Connect" style={{ background: showPaste ? "#1B2A4A" : "#fff", color: showPaste ? "#fff" : "#1B2A4A", border: "1px solid #1B2A4A", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📋 Paste List</button>
             <button onClick={() => fileInputRef.current?.click()} title="Import visitors from a filled template" style={{ background: "#1B2A4A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬆️ Import Excel</button>
             <button onClick={exportVisitors} title="Export all visitors to Excel" style={{ background: "#fff", color: "#1B2A4A", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📤 Export</button>
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
@@ -1237,6 +1326,89 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
         )}
       </div>
     </div>
+
+    {viewMode === "list" && showPaste && (
+      <Card style={{ marginBottom: 12, background: "#FEFCE8", borderColor: "#F59E0B" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>📋 Paste visitor list</div>
+        <div style={{ fontSize: 11, color: "#B45309", marginBottom: 8, lineHeight: 1.6 }}>
+          Copy the visitor rows straight from BNI Connect and paste them below — name, company, specialty, date, phone, email. "Edit" and "Delete" lines are ignored automatically. You'll choose each visitor's inviter in the next step.
+        </div>
+        <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} rows={10}
+          placeholder={"Sarah Tharakan\nNo Company\nCustom Clothing/Tailor\n08/07/2026\n+971 55 470 9460\nsarahbtharakan@gmail.com\nEdit\nDelete\nVik Patel\n..."}
+          style={{ width: "100%", boxSizing: "border-box", padding: 10, border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, fontFamily: "monospace", background: "#fff", resize: "vertical" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button onClick={parsePastedList} disabled={!pasteText.trim()} style={{ background: "#1B2A4A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: pasteText.trim() ? "pointer" : "not-allowed", opacity: pasteText.trim() ? 1 : 0.5 }}>Parse visitors →</button>
+          <button onClick={() => { setShowPaste(false); setPasteText(""); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+        </div>
+      </Card>
+    )}
+
+    {viewMode === "list" && pastePreview && (
+      <Card style={{ marginBottom: 12, background: "#F0FDF4", borderColor: "#22C55E" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#15803D" }}>✓ {pastePreview.length} visitor{pastePreview.length === 1 ? "" : "s"} detected — assign inviters</div>
+          <button onClick={() => setPastePreview(null)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#15803D" }}>✕</button>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }}>Same inviter for all:</span>
+          <select onChange={e => e.target.value && setAllInviters(e.target.value)} defaultValue=""
+            style={{ padding: "6px 10px", border: "1px solid #86EFAC", borderRadius: 8, fontSize: 12, background: "#fff" }}>
+            <option value="">Select member...</option>
+            {sortedMembers.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+          </select>
+        </div>
+        <div style={{ maxHeight: 340, overflowY: "auto", border: "1px solid #BBF7D0", borderRadius: 8, background: "#fff", marginBottom: 10 }}>
+          {pastePreview.map((r, i) => {
+            const skipped = r.status === "duplicate" || r.status === "error";
+            const badge = r.status === "ok" ? { bg: "#D1FAE5", text: "#065F46", label: "✓ Ready" } :
+                          r.status === "warning" ? { bg: "#FEF3C7", text: "#92400E", label: "⚠ Check" } :
+                          r.status === "duplicate" ? { bg: "#E5E7EB", text: "#374151", label: "⏭ Skip (duplicate)" } :
+                          { bg: "#FEE2E2", text: "#991B1B", label: "✗ Skip (error)" };
+            return (
+              <div key={i} style={{ padding: "10px 12px", borderBottom: "1px solid #F3F4F6", opacity: skipped ? 0.6 : 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{r.name || <em style={{ color: "#9CA3AF" }}>no name</em>} <span style={{ fontWeight: 400, color: "#6B7280" }}>{r.business || "—"}</span></div>
+                    <div style={{ fontSize: 10, color: "#6B7280" }}>{[r.specialty, r.phone, r.email, r.date].filter(Boolean).join(" • ")}</div>
+                    {r.warnings.length > 0 && <div style={{ fontSize: 10, color: "#B45309", marginTop: 2 }}>{r.warnings.join(" · ")}</div>}
+                  </div>
+                  <span style={{ background: badge.bg, color: badge.text, padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, alignSelf: "flex-start", whiteSpace: "nowrap" }}>{badge.label}</span>
+                </div>
+                {!skipped && (
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <div>
+                      <label style={{ fontSize: 9, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: 0.5 }}>Invited By</label>
+                      <select value={r.invitedBy} onChange={e => setPasteField(i, "invitedBy", e.target.value)}
+                        style={{ width: "100%", padding: "5px 8px", border: `1px solid ${r.invitedBy ? "#86EFAC" : "#FCD34D"}`, borderRadius: 6, fontSize: 12, background: "#fff" }}>
+                        <option value="">Select member...</option>
+                        {sortedMembers.map(m => <option key={m.id} value={m.name}>{m.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 9, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: 0.5 }}>Category (optional)</label>
+                      <select value={r.category} onChange={e => setPasteField(i, "category", e.target.value)}
+                        style={{ width: "100%", padding: "5px 8px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, background: "#fff" }}>
+                        <option value="">Select category...</option>
+                        {pasteCategoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={confirmPasteImport} disabled={importing || pastePreview.filter(r => r.status === "ok" || r.status === "warning").length === 0}
+            style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: importing ? "wait" : "pointer", opacity: importing ? 0.7 : 1 }}>
+            {importing ? "Adding…" : `✓ Add ${pastePreview.filter(r => r.status === "ok" || r.status === "warning").length} visitor${pastePreview.filter(r => r.status === "ok" || r.status === "warning").length === 1 ? "" : "s"}`}
+          </button>
+          <button onClick={() => { setPastePreview(null); setShowPaste(true); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>← Back to paste</button>
+          {pastePreview.some(r => (r.status === "ok" || r.status === "warning") && !r.invitedBy) &&
+            <span style={{ fontSize: 10, color: "#B45309" }}>Some visitors have no inviter selected — they'll be added without one.</span>}
+        </div>
+      </Card>
+    )}
 
     {viewMode === "list" && importPreview && (
       <Card style={{ marginBottom: 12, background: "#F0F9FF", borderColor: "#38BDF8" }}>
@@ -2057,7 +2229,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5.1</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5.2</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
