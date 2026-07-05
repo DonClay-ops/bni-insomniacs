@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -19,6 +20,15 @@ const getNextWednesday = () => {
   return toYMD(d);
 };
 const MEETING_DATE = getNextWednesday();
+
+// Next N Wednesdays (starting with the upcoming one) — used for the template date dropdown
+const upcomingWednesdays = (n = 8) => {
+  const out = [];
+  const d = new Date();
+  d.setDate(d.getDate() + ((3 - d.getDay() + 7) % 7));
+  for (let i = 0; i < n; i++) { out.push(toYMD(d)); d.setDate(d.getDate() + 7); }
+  return out;
+};
 
 // Normalise dates coming from Excel: serial numbers, DD/MM/YYYY, YYYY-MM-DD, or blank
 const normalizeExcelDate = (val) => {
@@ -1034,22 +1044,62 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef(null);
 
-  const TEMPLATE_HEADERS = ["Name", "Business", "Phone", "Email", "Invited By", "Category", "Specialty", "Meeting Date (YYYY-MM-DD)"];
+  const TEMPLATE_ROWS = 150; // dropdowns are applied to this many entry rows
 
-  const downloadTemplate = () => {
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([
-      TEMPLATE_HEADERS,
-      ["John Smith", "Smith Trading LLC", "050 1234567", "john@smithtrading.ae", "Anand Bhaskar", "Consulting", "Business Setup", MEETING_DATE],
-    ]);
-    ws["!cols"] = [{ wch: 22 }, { wch: 26 }, { wch: 15 }, { wch: 28 }, { wch: 22 }, { wch: 24 }, { wch: 26 }, { wch: 24 }];
-    XLSX.utils.book_append_sheet(wb, ws, "Visitors");
-    // Reference sheet: member names + categories so inviter/category spelling matches
-    const refRows = [["Member Name", "Category"], ...members.map(m => [m.name, m.category])];
-    const wsRef = XLSX.utils.aoa_to_sheet(refRows);
-    wsRef["!cols"] = [{ wch: 26 }, { wch: 26 }];
-    XLSX.utils.book_append_sheet(wb, wsRef, "Member Reference");
-    XLSX.writeFile(wb, `BNI_Visitor_Import_Template_${MEETING_DATE}.xlsx`);
+  const downloadTemplate = async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Visitors");
+    const lists = wb.addWorksheet("Lists");
+
+    // ── Lists sheet feeds the dropdowns (also handy as a reference) ──
+    const memberNames = members.map(m => m.name).sort((a, b) => a.localeCompare(b));
+    const categories = [...new Set([...members.map(m => m.category), ...ALL_BNI_CATEGORIES])].sort();
+    const specialties = [...new Set(members.map(m => m.specialty))].sort();
+    const dates = upcomingWednesdays(8);
+    lists.getRow(1).values = ["Members", "Categories", "Specialties", "Meeting Dates"];
+    lists.getRow(1).font = { bold: true };
+    memberNames.forEach((v, i) => { lists.getCell(`A${i + 2}`).value = v; });
+    categories.forEach((v, i) => { lists.getCell(`B${i + 2}`).value = v; });
+    specialties.forEach((v, i) => { lists.getCell(`C${i + 2}`).value = v; });
+    dates.forEach((v, i) => { lists.getCell(`D${i + 2}`).value = v; });
+    lists.columns = [{ width: 28 }, { width: 28 }, { width: 36 }, { width: 16 }];
+
+    // ── Visitors sheet: type only Name/Business/Phone/Email; rest are dropdowns ──
+    ws.columns = [
+      { header: "Name", width: 22 }, { header: "Business", width: 26 },
+      { header: "Phone", width: 16 }, { header: "Email", width: 28 },
+      { header: "Invited By", width: 26 }, { header: "Category", width: 28 },
+      { header: "Specialty", width: 30 }, { header: "Meeting Date", width: 16 },
+    ];
+    const head = ws.getRow(1);
+    head.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    head.eachCell(c => { c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF8B1A1A" } }; });
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+
+    const strictList = (range, what) => ({
+      type: "list", allowBlank: true, formulae: [range],
+      showErrorMessage: true, errorStyle: "stop",
+      errorTitle: `Invalid ${what}`, error: `Please pick a ${what} from the dropdown — typing is disabled to avoid errors.`,
+    });
+    for (let r = 2; r <= TEMPLATE_ROWS + 1; r++) {
+      ws.getCell(`E${r}`).dataValidation = strictList(`Lists!$A$2:$A$${memberNames.length + 1}`, "member");
+      ws.getCell(`F${r}`).dataValidation = strictList(`Lists!$B$2:$B$${categories.length + 1}`, "category");
+      ws.getCell(`G${r}`).dataValidation = {
+        type: "list", allowBlank: true, formulae: [`Lists!$C$2:$C$${specialties.length + 1}`],
+        showErrorMessage: true, errorStyle: "warning",
+        errorTitle: "New specialty", error: "This specialty isn't in the standard list. Click Yes to keep it anyway.",
+      };
+      ws.getCell(`H${r}`).dataValidation = strictList(`Lists!$D$2:$D$${dates.length + 1}`, "meeting date");
+    }
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `BNI_Visitor_Import_Template_${MEETING_DATE}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const exportVisitors = () => {
@@ -1098,6 +1148,9 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
           if (!name) { status = "error"; warnings.push("Name is required"); }
           if (!business) { status = "error"; warnings.push("Business is required"); }
           if (invitedBy && !memberNames.includes(invitedBy.toLowerCase())) warnings.push(`Inviter "${invitedBy}" not found in member list`);
+          const knownCategories = [...new Set([...members.map(m => m.category), ...ALL_BNI_CATEGORIES])].map(c => c.toLowerCase());
+          if (category && !knownCategories.includes(category.toLowerCase())) warnings.push(`"${category}" is not a standard BNI category`);
+          if (new Date(date).getDay() !== 3) warnings.push(`${date} is not a Wednesday`);
           const dup = visitors.find(v =>
             (phone && v.phone && v.phone.replace(/\s/g, "") === phone.replace(/\s/g, "")) ||
             (email && v.email && v.email.toLowerCase() === email.toLowerCase()) ||
@@ -2004,7 +2057,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5.1</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
