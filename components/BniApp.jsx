@@ -1,10 +1,43 @@
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@supabase/supabase-js";
+import * as XLSX from "xlsx";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
+
+// ═══════════════════════════════════════════
+// MEETING DATE — always the upcoming Wednesday (today, if today is Wednesday)
+// ═══════════════════════════════════════════
+const pad2 = (n) => String(n).padStart(2, "0");
+const toYMD = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const getNextWednesday = () => {
+  const d = new Date();
+  const diff = (3 - d.getDay() + 7) % 7; // 3 = Wednesday
+  d.setDate(d.getDate() + diff);
+  return toYMD(d);
+};
+const MEETING_DATE = getNextWednesday();
+
+// Normalise dates coming from Excel: serial numbers, DD/MM/YYYY, YYYY-MM-DD, or blank
+const normalizeExcelDate = (val) => {
+  if (val === null || val === undefined || String(val).trim() === "") return MEETING_DATE;
+  if (typeof val === "number") {
+    // Excel serial date → JS date
+    const d = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return isNaN(d) ? MEETING_DATE : toYMD(d);
+  }
+  const s = String(val).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dmy = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/); // DD/MM/YYYY (UAE format)
+  if (dmy) {
+    const yr = dmy[3].length === 2 ? `20${dmy[3]}` : dmy[3];
+    return `${yr}-${pad2(+dmy[2])}-${pad2(+dmy[1])}`;
+  }
+  const d = new Date(s);
+  return isNaN(d) ? MEETING_DATE : toYMD(d);
+};
 
 // ═══════════════════════════════════════════
 // REAL MEMBER DATA - BNI INSOMNIACS  (now used as INITIAL state, editable)
@@ -134,13 +167,13 @@ const INITIAL_VISITORS = [
   // ── Previous meetings ──
   { id: 4, name: "David Chen", business: "IT Solutions Provider", phone: "+971 56 321 0987", email: "david@example.com", invitedBy: "Bhaskar Shah", status: "attended", callNotes: "Has 50+ business cards", category: "Computer & Programming", specialty: "IT Solutions", seatAssignment: "Next to Manoharan (Networks)", followUpResponse: "questions", date: "2026-03-10", bio: null, validation: null },
   { id: 5, name: "Amina Yusuf", business: "Legal Consultancy", phone: "+971 54 654 3210", email: "amina@example.com", invitedBy: "Emil Sunil George", status: "applied", callNotes: "Returning visitor, very engaged", category: "Legal & Accounting", specialty: "Corporate Law", seatAssignment: "Next to Mahrukh (IP Law)", followUpResponse: "ready", date: "2026-03-10", bio: null, validation: null },
-  // ── Tomorrow's meeting — 2026-04-08 ──
-  { id: 10, name: "Ram Bahin (Substitute)", business: "Paparazzi House", phone: "050 8500750", email: "Director@paparazzi.house", invitedBy: "Anand Bhaskar", status: "confirmed", callNotes: "Substitute visitor", category: "Training & Coaching", specialty: "Business Training / Coach", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
-  { id: 11, name: "Shahnawaz", business: "Dimos Café & Restaurant", phone: "055 8691155", email: "dimoscafeandrestaurant@gmail.com", invitedBy: "Ankita Rao", status: "called", callNotes: "Was busy. Details sent. Visit to be confirmed.", category: "Food & Beverage", specialty: "Restaurant / Café", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
-  { id: 12, name: "Kapardhi Dhavala", business: "Property Maintainace", phone: "056 6817669", email: "kapardhi.dhavala@spacemanager.ae", invitedBy: "Ankita Rao", status: "registered", callNotes: "No. not reachable — Ankita informed.", category: "Construction", specialty: "Property Maintenance", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
-  { id: 13, name: "Kevin Monteiro", business: "Voxtel Communication", phone: "055 1226166", email: "kevin@voxtelme.com", invitedBy: "", status: "registered", callNotes: "No. not reachable or constantly busy.", category: "Computer & Programming", specialty: "IT Consultants / Communication", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
-  { id: 14, name: "Varaprasad SN", business: "Optculture", phone: "052 9045457", email: "varaprasad@optculture.com", invitedBy: "Madhu Pallath", status: "confirmed", callNotes: "Confirmed. Details sent.", category: "Advertising & Marketing", specialty: "Customer Loyalty & Engagement", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
-  { id: 15, name: "Kanchan", business: "KLIPIT", phone: "052 254 6953", email: "kanchan.magaji@klipit.co", invitedBy: "Madhu Pallath", status: "registered", callNotes: "No. not reachable. Madhu informed.", category: "Advertising & Marketing", specialty: "Digital Reimbursement Platform", seatAssignment: "", followUpResponse: null, date: "2026-04-08", bio: null, validation: null },
+  // ── Demo visitors (replaced by Supabase data on load) ──
+  { id: 10, name: "Ram Bahin (Substitute)", business: "Paparazzi House", phone: "050 8500750", email: "Director@paparazzi.house", invitedBy: "Anand Bhaskar", status: "confirmed", callNotes: "Substitute visitor", category: "Training & Coaching", specialty: "Business Training / Coach", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
+  { id: 11, name: "Shahnawaz", business: "Dimos Café & Restaurant", phone: "055 8691155", email: "dimoscafeandrestaurant@gmail.com", invitedBy: "Ankita Rao", status: "called", callNotes: "Was busy. Details sent. Visit to be confirmed.", category: "Food & Beverage", specialty: "Restaurant / Café", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
+  { id: 12, name: "Kapardhi Dhavala", business: "Property Maintainace", phone: "056 6817669", email: "kapardhi.dhavala@spacemanager.ae", invitedBy: "Ankita Rao", status: "registered", callNotes: "No. not reachable — Ankita informed.", category: "Construction", specialty: "Property Maintenance", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
+  { id: 13, name: "Kevin Monteiro", business: "Voxtel Communication", phone: "055 1226166", email: "kevin@voxtelme.com", invitedBy: "", status: "registered", callNotes: "No. not reachable or constantly busy.", category: "Computer & Programming", specialty: "IT Consultants / Communication", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
+  { id: 14, name: "Varaprasad SN", business: "Optculture", phone: "052 9045457", email: "varaprasad@optculture.com", invitedBy: "Madhu Pallath", status: "confirmed", callNotes: "Confirmed. Details sent.", category: "Advertising & Marketing", specialty: "Customer Loyalty & Engagement", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
+  { id: 15, name: "Kanchan", business: "KLIPIT", phone: "052 254 6953", email: "kanchan.magaji@klipit.co", invitedBy: "Madhu Pallath", status: "registered", callNotes: "No. not reachable. Madhu informed.", category: "Advertising & Marketing", specialty: "Digital Reimbursement Platform", seatAssignment: "", followUpResponse: null, date: MEETING_DATE, bio: null, validation: null },
 ];
 
 // ═══════════════════════════════════════════
@@ -540,7 +573,7 @@ Be honest and specific. If information is missing (no category, no business name
 // SEAT PLANNER COMPONENT  (unchanged from v1, takes members as prop now)
 // ═══════════════════════════════════════════
 function SeatPlanner({ visitors, asks, members }) {
-  const meetingVisitors = visitors.filter(v => v.date === "2026-04-08");
+  const meetingVisitors = visitors.filter(v => v.date === MEETING_DATE);
   const [seats, setSeats] = useState(() => {
     const assigned = {};
     meetingVisitors.slice(0, 6).forEach((v, i) => { assigned[`V${i + 1}`] = v.id; });
@@ -872,7 +905,7 @@ const TABS = [
 ];
 
 function DashboardTab({ visitors, asks, members, archived }) {
-  const thisWeek = visitors.filter(v => v.date === "2026-04-08");
+  const thisWeek = visitors.filter(v => v.date === MEETING_DATE);
   const attended = visitors.filter(v => ["attended","oriented","applied","joined"].includes(v.status)).length;
   const applied = visitors.filter(v => ["applied","joined"].includes(v.status)).length;
   const ratio = attended > 0 ? Math.round((applied / attended) * 100) : 0;
@@ -918,10 +951,10 @@ function DashboardTab({ visitors, asks, members, archived }) {
 function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchived }) {
   const [showForm, setShowForm] = useState(false);
   const [viewMode, setViewMode] = useState("list");
-  const [printDate, setPrintDate] = useState("2026-04-08");
+  const [printDate, setPrintDate] = useState(MEETING_DATE);
   const [expandedId, setExpandedId] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState({ name: "", business: "", phone: "", email: "", invitedBy: "", category: "", specialty: "", date: "2026-04-08" });
+  const [form, setForm] = useState({ name: "", business: "", phone: "", email: "", invitedBy: "", category: "", specialty: "", date: MEETING_DATE });
   const [editForm, setEditForm] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [confirmArchive, setConfirmArchive] = useState(null);
@@ -951,7 +984,7 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
       call_notes: "", seat_assignment: "", follow_up_response: null, bio: null
     }]).select();
     if (data?.[0]) setVisitors(p => [...p, { ...data[0], invitedBy: data[0].invited_by, callNotes: data[0].call_notes, seatAssignment: data[0].seat_assignment, followUpResponse: data[0].follow_up_response }]);
-    setForm({ name: "", business: "", phone: "", email: "", invitedBy: "", category: "", specialty: "", date: "2026-04-08" });
+    setForm({ name: "", business: "", phone: "", email: "", invitedBy: "", category: "", specialty: "", date: MEETING_DATE });
     setShowForm(false);
   };
 
@@ -967,14 +1000,21 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
 
   const startEdit = (v) => { setEditingId(v.id); setEditForm({ ...v }); setExpandedId(null); };
   const cancelEdit = () => { setEditingId(null); setEditForm({}); };
-  const saveEdit = () => {
+  const saveEdit = async () => {
+    await supabase.from("visitors").update({
+      name: editForm.name, business: editForm.business, phone: editForm.phone,
+      email: editForm.email, invited_by: editForm.invitedBy, category: editForm.category,
+      specialty: editForm.specialty, date: editForm.date, status: editForm.status,
+      call_notes: editForm.callNotes, seat_assignment: editForm.seatAssignment,
+    }).eq("id", editingId);
     setVisitors(p => p.map(v => v.id === editingId ? { ...v, ...editForm } : v));
     setEditingId(null);
     setEditForm({});
   };
 
   const requestDelete = (v) => setConfirmDelete(v);
-  const doDelete = () => {
+  const doDelete = async () => {
+    await supabase.from("visitors").delete().eq("id", confirmDelete.id);
     setVisitors(p => p.filter(v => v.id !== confirmDelete.id));
     setConfirmDelete(null);
   };
@@ -985,6 +1025,124 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
     setArchived(p => [...p, { ...confirmArchive, archivedAt }]);
     setVisitors(p => p.filter(v => v.id !== confirmArchive.id));
     setConfirmArchive(null);
+  };
+
+  // ═══════════════════════════════════════════
+  // EXCEL BULK IMPORT / EXPORT
+  // ═══════════════════════════════════════════
+  const [importPreview, setImportPreview] = useState(null); // array of parsed rows or null
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const TEMPLATE_HEADERS = ["Name", "Business", "Phone", "Email", "Invited By", "Category", "Specialty", "Meeting Date (YYYY-MM-DD)"];
+
+  const downloadTemplate = () => {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([
+      TEMPLATE_HEADERS,
+      ["John Smith", "Smith Trading LLC", "050 1234567", "john@smithtrading.ae", "Anand Bhaskar", "Consulting", "Business Setup", MEETING_DATE],
+    ]);
+    ws["!cols"] = [{ wch: 22 }, { wch: 26 }, { wch: 15 }, { wch: 28 }, { wch: 22 }, { wch: 24 }, { wch: 26 }, { wch: 24 }];
+    XLSX.utils.book_append_sheet(wb, ws, "Visitors");
+    // Reference sheet: member names + categories so inviter/category spelling matches
+    const refRows = [["Member Name", "Category"], ...members.map(m => [m.name, m.category])];
+    const wsRef = XLSX.utils.aoa_to_sheet(refRows);
+    wsRef["!cols"] = [{ wch: 26 }, { wch: 26 }];
+    XLSX.utils.book_append_sheet(wb, wsRef, "Member Reference");
+    XLSX.writeFile(wb, `BNI_Visitor_Import_Template_${MEETING_DATE}.xlsx`);
+  };
+
+  const exportVisitors = () => {
+    const rows = visitors.map(v => ({
+      Name: v.name, Business: v.business, Phone: v.phone, Email: v.email,
+      "Invited By": v.invitedBy || "", Category: v.category || "", Specialty: v.specialty || "",
+      "Meeting Date": v.date || "", Status: v.status || "", "Call Notes": v.callNotes || "",
+    }));
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = Object.keys(rows[0] || { a: 1 }).map(() => ({ wch: 22 }));
+    XLSX.utils.book_append_sheet(wb, ws, "Visitors");
+    XLSX.writeFile(wb, `BNI_Visitors_Export_${toYMD(new Date())}.xlsx`);
+  };
+
+  const handleImportFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+        const memberNames = members.map(m => m.name.toLowerCase());
+        // Header lookup is case/spacing tolerant
+        const get = (row, ...keys) => {
+          const rowKeys = Object.keys(row);
+          for (const k of keys) {
+            const found = rowKeys.find(rk => rk.toLowerCase().replace(/[^a-z]/g, "").startsWith(k));
+            if (found !== undefined) return row[found];
+          }
+          return "";
+        };
+        const parsed = raw.map((row, i) => {
+          const name = String(get(row, "name") || "").trim();
+          const business = String(get(row, "business", "company") || "").trim();
+          const phone = String(get(row, "phone", "mobile") || "").trim();
+          const email = String(get(row, "email") || "").trim();
+          const invitedBy = String(get(row, "invitedby", "inviter") || "").trim();
+          const category = String(get(row, "category") || "").trim();
+          const specialty = String(get(row, "specialty", "classification") || "").trim();
+          const date = normalizeExcelDate(get(row, "meetingdate", "date"));
+          const warnings = [];
+          let status = "ok";
+          if (!name) { status = "error"; warnings.push("Name is required"); }
+          if (!business) { status = "error"; warnings.push("Business is required"); }
+          if (invitedBy && !memberNames.includes(invitedBy.toLowerCase())) warnings.push(`Inviter "${invitedBy}" not found in member list`);
+          const dup = visitors.find(v =>
+            (phone && v.phone && v.phone.replace(/\s/g, "") === phone.replace(/\s/g, "")) ||
+            (email && v.email && v.email.toLowerCase() === email.toLowerCase()) ||
+            (name && v.name.toLowerCase() === name.toLowerCase() && v.business.toLowerCase() === business.toLowerCase())
+          );
+          if (dup) { status = "duplicate"; warnings.push(`Already in list as "${dup.name}" (${dup.business})`); }
+          if (status === "ok" && warnings.length) status = "warning";
+          return { rowNum: i + 2, name, business, phone, email, invitedBy, category, specialty, date, status, warnings };
+        }).filter(r => r.name || r.business || r.phone || r.email); // skip fully blank rows
+        setImportPreview(parsed.length ? parsed : []);
+      } catch (err) {
+        console.error("Excel parse failed:", err);
+        alert("Could not read that file. Please use the downloaded template (.xlsx).");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = ""; // allow re-selecting the same file
+  };
+
+  const confirmImport = async () => {
+    const toImport = importPreview.filter(r => r.status === "ok" || r.status === "warning");
+    if (!toImport.length) { setImportPreview(null); return; }
+    setImporting(true);
+    try {
+      const { data, error } = await supabase.from("visitors").insert(
+        toImport.map(r => ({
+          name: r.name, business: r.business, phone: r.phone, email: r.email,
+          invited_by: r.invitedBy, category: r.category, specialty: r.specialty,
+          date: r.date, status: "registered",
+          call_notes: "", seat_assignment: "", follow_up_response: null, bio: null,
+        }))
+      ).select();
+      if (error) throw error;
+      if (data?.length) {
+        setVisitors(p => [...p, ...data.map(v => ({
+          ...v, invitedBy: v.invited_by, callNotes: v.call_notes,
+          seatAssignment: v.seat_assignment, followUpResponse: v.follow_up_response,
+        }))]);
+      }
+      setImportPreview(null);
+    } catch (err) {
+      console.error("Bulk import failed:", err);
+      alert("Import failed — nothing was saved. Check your connection and try again.");
+    }
+    setImporting(false);
   };
 
   return <div>
@@ -1016,10 +1174,54 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
           <button onClick={() => setViewMode("print")} style={{ padding: "7px 12px", fontSize: 11, fontWeight: 600, border: "none", cursor: "pointer", background: viewMode === "print" ? "#1B2A4A" : "#fff", color: viewMode === "print" ? "#fff" : "#6B7280" }}>🖨️ Print View</button>
         </div>
         {viewMode === "list" && (
-          <button onClick={() => setShowForm(!showForm)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Register</button>
+          <>
+            <button onClick={downloadTemplate} title="Download a blank Excel template" style={{ background: "#fff", color: "#1B2A4A", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬇️ Template</button>
+            <button onClick={() => fileInputRef.current?.click()} title="Import visitors from a filled template" style={{ background: "#1B2A4A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬆️ Import Excel</button>
+            <button onClick={exportVisitors} title="Export all visitors to Excel" style={{ background: "#fff", color: "#1B2A4A", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📤 Export</button>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImportFile} style={{ display: "none" }} />
+            <button onClick={() => setShowForm(!showForm)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Register</button>
+          </>
         )}
       </div>
     </div>
+
+    {viewMode === "list" && importPreview && (
+      <Card style={{ marginBottom: 12, background: "#F0F9FF", borderColor: "#38BDF8" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#0C4A6E" }}>📋 Import Preview — {importPreview.length} row{importPreview.length === 1 ? "" : "s"} found</div>
+          <button onClick={() => setImportPreview(null)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#0C4A6E" }}>✕</button>
+        </div>
+        {importPreview.length === 0 && <div style={{ fontSize: 12, color: "#6B7280" }}>No data rows found in that file. Fill in the template starting from row 2 and re-upload.</div>}
+        {importPreview.length > 0 && <>
+          <div style={{ maxHeight: 280, overflowY: "auto", border: "1px solid #BAE6FD", borderRadius: 8, background: "#fff", marginBottom: 10 }}>
+            {importPreview.map((r, i) => {
+              const badge = r.status === "ok" ? { bg: "#D1FAE5", text: "#065F46", label: "✓ Ready" } :
+                            r.status === "warning" ? { bg: "#FEF3C7", text: "#92400E", label: "⚠ Check" } :
+                            r.status === "duplicate" ? { bg: "#E5E7EB", text: "#374151", label: "⏭ Skip (duplicate)" } :
+                            { bg: "#FEE2E2", text: "#991B1B", label: "✗ Skip (error)" };
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "8px 10px", borderBottom: "1px solid #F3F4F6", fontSize: 12, opacity: (r.status === "duplicate" || r.status === "error") ? 0.65 : 1 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700 }}>{r.name || <em style={{ color: "#9CA3AF" }}>no name</em>} <span style={{ fontWeight: 400, color: "#6B7280" }}>{r.business}</span></div>
+                    <div style={{ fontSize: 10, color: "#6B7280" }}>{[r.phone, r.email, r.invitedBy && `Invited by ${r.invitedBy}`, r.date].filter(Boolean).join(" • ")}</div>
+                    {r.warnings.length > 0 && <div style={{ fontSize: 10, color: "#B45309", marginTop: 2 }}>{r.warnings.join(" · ")} (row {r.rowNum})</div>}
+                  </div>
+                  <span style={{ background: badge.bg, color: badge.text, padding: "2px 8px", borderRadius: 10, fontSize: 10, fontWeight: 700, alignSelf: "flex-start", whiteSpace: "nowrap" }}>{badge.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button onClick={confirmImport} disabled={importing || importPreview.filter(r => r.status === "ok" || r.status === "warning").length === 0}
+              style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: importing ? "wait" : "pointer", opacity: importing ? 0.7 : 1 }}>
+              {importing ? "Importing…" : `✓ Import ${importPreview.filter(r => r.status === "ok" || r.status === "warning").length} visitor${importPreview.filter(r => r.status === "ok" || r.status === "warning").length === 1 ? "" : "s"}`}
+            </button>
+            <button onClick={() => setImportPreview(null)} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+            <span style={{ fontSize: 10, color: "#6B7280" }}>Duplicates and rows with errors are skipped automatically.</span>
+          </div>
+        </>}
+      </Card>
+    )}
 
     {viewMode === "list" && <>
       {showForm && <Card style={{ marginBottom: 12, background: "#FEFCE8" }}>
@@ -1565,20 +1767,17 @@ function AIMatchTab({ visitors, asks, members }) {
 }
 
 // ═══════════════════════════════════════════
-// V3: MEMBERS TAB — Supabase-connected, edit bug fixed, confirm button
+// UPGRADED: MEMBERS TAB — add, edit, delete members
 // ═══════════════════════════════════════════
 function MembersTab({ members, setMembers }) {
   const [search, setSearch] = useState("");
   const [filterCat, setFilterCat] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", category: "", specialty: "" });
-  const [addForm, setAddForm] = useState({ name: "", category: "", specialty: "" });
+  const [form, setForm] = useState({ name: "", category: "", specialty: "" });
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [pendingChanges, setPendingChanges] = useState([]);  // track unsaved changes
-  const [saveSuccess, setSaveSuccess] = useState(false);
 
+  // Build a category list that includes both existing chapter categories AND the master BNI list
   const existingCategories = [...new Set(members.map(m => m.category))];
   const categoryOptions = [...new Set([...existingCategories, ...ALL_BNI_CATEGORIES])].sort();
 
@@ -1588,99 +1787,44 @@ function MembersTab({ members, setMembers }) {
     return matchSearch && matchCat;
   });
 
-  // Add new member — saves to Supabase immediately
-  const addMember = async () => {
-    if (!addForm.name.trim() || !addForm.category || !addForm.specialty.trim()) {
+  const addMember = () => {
+    if (!form.name.trim() || !form.category || !form.specialty.trim()) {
       alert("Please fill in name, category, and specialty.");
       return;
     }
-    setSaving(true);
-    try {
-      const { data, error } = await supabase.from("members").insert([{
-        name: addForm.name.trim(),
-        category: addForm.category,
-        specialty: addForm.specialty.trim()
-      }]).select();
-      if (error) throw error;
-      if (data?.[0]) setMembers(p => [...p, data[0]]);
-      setAddForm({ name: "", category: "", specialty: "" });
-      setShowForm(false);
-      showSaveSuccess();
-    } catch (e) {
-      // Fallback: save locally if Supabase fails
-      const newId = members.length > 0 ? Math.max(...members.map(m => m.id)) + 1 : 1;
-      setMembers(p => [...p, { id: newId, name: addForm.name.trim(), category: addForm.category, specialty: addForm.specialty.trim() }]);
-      setAddForm({ name: "", category: "", specialty: "" });
-      setShowForm(false);
-    }
-    setSaving(false);
-  };
-
-  // Start editing — FIX: use separate editForm state, don't conflict with showForm
-  const startEdit = (m) => {
-    setEditingId(m.id);
-    setEditForm({ name: m.name, category: m.category, specialty: m.specialty });
+    const newId = members.length > 0 ? Math.max(...members.map(m => m.id)) + 1 : 1;
+    setMembers(p => [...p, { id: newId, name: form.name.trim(), category: form.category, specialty: form.specialty.trim() }]);
+    setForm({ name: "", category: "", specialty: "" });
     setShowForm(false);
   };
-  const cancelEdit = () => { setEditingId(null); setEditForm({ name: "", category: "", specialty: "" }); };
 
-  // Save edit — saves to Supabase
-  const saveEdit = async () => {
-    if (!editForm.name.trim() || !editForm.category || !editForm.specialty.trim()) {
+  const startEdit = (m) => { setEditingId(m.id); setForm({ name: m.name, category: m.category, specialty: m.specialty }); setShowForm(false); };
+  const cancelEdit = () => { setEditingId(null); setForm({ name: "", category: "", specialty: "" }); };
+  const saveEdit = () => {
+    if (!form.name.trim() || !form.category || !form.specialty.trim()) {
       alert("Please fill in name, category, and specialty.");
       return;
     }
-    setSaving(true);
-    try {
-      const { error } = await supabase.from("members").update({
-        name: editForm.name.trim(),
-        category: editForm.category,
-        specialty: editForm.specialty.trim()
-      }).eq("id", editingId);
-      if (error) throw error;
-    } catch (e) {
-      console.error("Supabase update failed:", e);
-    }
-    setMembers(p => p.map(m => m.id === editingId ? { ...m, name: editForm.name.trim(), category: editForm.category, specialty: editForm.specialty.trim() } : m));
+    setMembers(p => p.map(m => m.id === editingId ? { ...m, name: form.name.trim(), category: form.category, specialty: form.specialty.trim() } : m));
     setEditingId(null);
-    setEditForm({ name: "", category: "", specialty: "" });
-    setSaving(false);
-    showSaveSuccess();
+    setForm({ name: "", category: "", specialty: "" });
   };
 
-  // Delete — saves to Supabase
-  const doDelete = async () => {
-    setSaving(true);
-    try {
-      await supabase.from("members").delete().eq("id", confirmDelete.id);
-    } catch (e) {
-      console.error("Supabase delete failed:", e);
-    }
-    setMembers(p => p.filter(m => m.id !== confirmDelete.id));
-    setConfirmDelete(null);
-    setSaving(false);
-    showSaveSuccess();
-  };
-
-  const showSaveSuccess = () => { setSaveSuccess(true); setTimeout(() => setSaveSuccess(false), 3000); };
+  const doDelete = () => { setMembers(p => p.filter(m => m.id !== confirmDelete.id)); setConfirmDelete(null); };
 
   return (
     <div>
       <ConfirmModal
         open={!!confirmDelete}
         title="Remove this member from the chapter?"
-        message={confirmDelete ? `"${confirmDelete.name}" (${confirmDelete.specialty}) will be permanently removed from the chapter roster and deleted from the database. This cannot be undone.` : ""}
-        confirmLabel="Yes, remove permanently"
+        message={confirmDelete ? `"${confirmDelete.name}" (${confirmDelete.specialty}) will be removed from your member roster. This cannot be undone. Their existing asks and historical data are kept but will no longer match in AI Match.` : ""}
+        confirmLabel="Yes, remove"
         onConfirm={doDelete}
         onCancel={() => setConfirmDelete(null)}
       />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
-        <div>
-          <span style={{ fontWeight: 700, fontSize: 15 }}>Chapter Members ({members.length})</span>
-          {saveSuccess && <span style={{ marginLeft: 10, fontSize: 11, color: "#059669", fontWeight: 700 }}>✅ Saved to database!</span>}
-          {saving && <span style={{ marginLeft: 10, fontSize: 11, color: "#6B7280" }}>Saving...</span>}
-        </div>
+        <span style={{ fontWeight: 700, fontSize: 15 }}>Chapter Members ({members.length})</span>
         <button
           onClick={() => { setShowForm(!showForm); cancelEdit(); }}
           style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -1688,62 +1832,40 @@ function MembersTab({ members, setMembers }) {
         </button>
       </div>
 
-      {/* ADD MEMBER FORM */}
-      {showForm && (
-        <Card style={{ marginBottom: 12, background: "#F0FDF4", borderColor: "#22C55E" }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: "#15803D", marginBottom: 8 }}>➕ New Member</div>
+      {(showForm || editingId) && (
+        <Card style={{ marginBottom: 12, background: editingId ? "#FEFCE8" : "#F0FDF4", borderColor: editingId ? "#F59E0B" : "#22C55E" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: editingId ? "#92400E" : "#15803D", marginBottom: 8 }}>
+            {editingId ? "✏️ Editing member" : "➕ New member"}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
             <div style={{ gridColumn: "span 2" }}>
               <label style={{ fontSize: 10, fontWeight: 600 }}>Full Name</label>
-              <input value={addForm.name} onChange={e => setAddForm(p => ({...p, name: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} placeholder="e.g. John Smith" />
+              <input value={form.name} onChange={e => setForm(p => ({...p, name: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} placeholder="e.g. John Smith" />
             </div>
             <div>
               <label style={{ fontSize: 10, fontWeight: 600 }}>Category</label>
-              <select value={addForm.category} onChange={e => setAddForm(p => ({...p, category: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12 }}>
+              <select value={form.category} onChange={e => setForm(p => ({...p, category: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12 }}>
                 <option value="">Select category...</option>
                 {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
             <div>
               <label style={{ fontSize: 10, fontWeight: 600 }}>Specialty / Classification</label>
-              <input value={addForm.specialty} onChange={e => setAddForm(p => ({...p, specialty: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} placeholder="e.g. Wealth Management" />
+              <input value={form.specialty} onChange={e => setForm(p => ({...p, specialty: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} placeholder="e.g. Wealth Management" />
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-            <button onClick={addMember} disabled={saving} style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: saving ? 0.6 : 1 }}>
-              {saving ? "Saving..." : "✓ Confirm & Save to Database"}
-            </button>
-            <button onClick={() => { setShowForm(false); setAddForm({ name: "", category: "", specialty: "" }); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-          </div>
-        </Card>
-      )}
-
-      {/* EDIT MEMBER FORM — separate from add form, no conflict */}
-      {editingId && (
-        <Card style={{ marginBottom: 12, background: "#FEFCE8", borderColor: "#F59E0B", border: "2px solid #F59E0B" }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: "#92400E", marginBottom: 8 }}>✏️ Editing Member</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div style={{ gridColumn: "span 2" }}>
-              <label style={{ fontSize: 10, fontWeight: 600 }}>Full Name</label>
-              <input value={editForm.name} onChange={e => setEditForm(p => ({...p, name: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} />
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 600 }}>Category</label>
-              <select value={editForm.category} onChange={e => setEditForm(p => ({...p, category: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12 }}>
-                <option value="">Select category...</option>
-                {categoryOptions.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            <div>
-              <label style={{ fontSize: 10, fontWeight: 600 }}>Specialty / Classification</label>
-              <input value={editForm.specialty} onChange={e => setEditForm(p => ({...p, specialty: e.target.value}))} style={{ width: "100%", padding: "6px 10px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} />
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
-            <button onClick={saveEdit} disabled={saving} style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: saving ? 0.6 : 1 }}>
-              {saving ? "Saving..." : "💾 Confirm & Save Changes"}
-            </button>
-            <button onClick={cancelEdit} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+            {editingId ? (
+              <>
+                <button onClick={saveEdit} style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>💾 Save Changes</button>
+                <button onClick={cancelEdit} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+              </>
+            ) : (
+              <>
+                <button onClick={addMember} style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>✓ Add to Chapter</button>
+                <button onClick={() => { setShowForm(false); setForm({ name: "", category: "", specialty: "" }); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+              </>
+            )}
           </div>
         </Card>
       )}
@@ -1758,17 +1880,15 @@ function MembersTab({ members, setMembers }) {
       <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 8 }}>{filtered.length} members shown</div>
       <div style={{ maxHeight: 500, overflowY: "auto", border: "1px solid #E5E7EB", borderRadius: 10, background: "#fff" }}>
         {filtered.map(m => (
-          <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #F3F4F6", fontSize: 12, background: editingId === m.id ? "#FFFBEB" : "transparent" }}>
+          <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, color: "#111" }}>{m.name}</div>
               <div style={{ fontSize: 11, color: "#6B7280" }}>{m.specialty}</div>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
               <Badge bg="#F3F4F6" text="#374151" label={m.category} />
-              <button onClick={() => editingId === m.id ? cancelEdit() : startEdit(m)} style={{ background: editingId === m.id ? "#FEF3C7" : "#FEF3C7", border: "1px solid #FCD34D", color: "#92400E", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>
-                {editingId === m.id ? "✕ Cancel" : "✏️ Edit"}
-              </button>
-              <button onClick={() => setConfirmDelete(m)} style={{ background: "#fff", border: "1px solid #FCA5A5", color: "#991B1B", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>🗑️ Delete</button>
+              <button onClick={() => startEdit(m)} style={{ background: "#FEF3C7", border: "1px solid #FCD34D", color: "#92400E", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>✏️</button>
+              <button onClick={() => setConfirmDelete(m)} style={{ background: "#fff", border: "1px solid #FCA5A5", color: "#991B1B", borderRadius: 6, padding: "3px 8px", fontSize: 10, cursor: "pointer", fontWeight: 700 }}>🗑️</button>
             </div>
           </div>
         ))}
@@ -1829,10 +1949,9 @@ export default function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const [{ data: visitorsData }, { data: asksData }, { data: membersData }] = await Promise.all([
+        const [{ data: visitorsData }, { data: asksData }] = await Promise.all([
           supabase.from("visitors").select("*").order("id", { ascending: true }),
           supabase.from("asks").select("*").order("id", { ascending: true }),
-          supabase.from("members").select("*").order("id", { ascending: true }),
         ]);
         if (visitorsData?.length) {
           setVisitors(visitorsData.map(v => ({
@@ -1854,9 +1973,6 @@ export default function App() {
             targetCategory: a.target_category,
             targetRole: a.target_role,
           })));
-        }
-        if (membersData?.length) {
-          setMembers(membersData);
         }
       } catch (e) {
         console.error("Failed to load from Supabase:", e);
@@ -1888,11 +2004,11 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v3</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
-        <span>👥 {visitors.filter(v => v.date === "2026-04-08").length} this week</span>
+        <span>👥 {visitors.filter(v => v.date === MEETING_DATE).length} this week</span>
         <span>🎯 {asks.filter(a => a.status === "open").length} open asks</span>
         <span>🗄️ {archived.length} archived</span>
       </div>
