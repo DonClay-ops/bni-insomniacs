@@ -21,6 +21,30 @@ const getNextWednesday = () => {
 };
 const MEETING_DATE = getNextWednesday();
 
+// ═══════════════════════════════════════════
+// SHARED CLAUDE API HELPER — correct browser headers, JSON response parsing
+// ═══════════════════════════════════════════
+const callClaude = async (prompt, maxTokens = 1500) => {
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.NEXT_PUBLIC_ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message || "API error");
+  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+};
+
 // Next N Wednesdays (starting with the upcoming one) — used for the template date dropdown
 const upcomingWednesdays = (n = 8) => {
   const out = [];
@@ -298,19 +322,7 @@ Write a briefing in this exact JSON structure (no markdown, pure JSON):
   "linkedinTip": "Exact search string to use on LinkedIn or Google to find ${visitor.name} at ${visitor.business} and what to look for"
 }`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: prompt }]
-        })
-      });
-      const data = await response.json();
-      const text = data.content?.[0]?.text || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const parsed = await callClaude(prompt, 1000);
       setBio(parsed);
       onBioSaved(visitor.id, parsed);
     } catch (e) {
@@ -443,19 +455,7 @@ Evaluate the visitor and return ONLY valid JSON in this exact structure (no mark
 
 Be honest and specific. If information is missing (no category, no business name, no inviter), flag it. If there is a clear classification conflict with an existing member, the verdict must be RED or AMBER — never GREEN.`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1200,
-          messages: [{ role: "user", content: prompt }]
-        })
-      });
-      const data = await response.json();
-      const text = data.content?.[0]?.text || "";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const parsed = JSON.parse(clean);
+      const parsed = await callClaude(prompt, 1200);
       setResult(parsed);
       onValidationSaved(visitor.id, parsed);
     } catch (e) {
@@ -907,6 +907,7 @@ const TABS = [
   { label: "Dashboard", icon: "📊" },
   { label: "Visitors", icon: "👥" },
   { label: "Asks", icon: "🎯" },
+  { label: "Connect", icon: "🔗" },
   { label: "AI Match", icon: "🤖" },
   { label: "Seat Planner", icon: "🪑" },
   { label: "Members", icon: "📇" },
@@ -2162,6 +2163,166 @@ function FollowUpTab({ visitors, setVisitors }) {
   </div>;
 }
 
+// ═══════════════════════════════════════════
+// CONNECTION ENGINE — ask aging, AI weekly digest, member 1-2-1 pairings
+// ═══════════════════════════════════════════
+function ConnectionEngineTab({ visitors, asks, members }) {
+  const [digest, setDigest] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const openAsks = asks.filter(a => a.status === "open");
+  const daysOpen = (d) => Math.max(0, Math.floor((new Date(MEETING_DATE) - new Date(d)) / 86400000));
+  const agedAsks = [...openAsks].sort((a, b) => daysOpen(b.date) - daysOpen(a.date));
+  const thisWeek = visitors.filter(v => v.date === MEETING_DATE);
+
+  const askSummary = (a) => [a.targetName, a.targetCompany, a.targetRole, a.notes].filter(Boolean).join(" — ");
+
+  const generate = async () => {
+    setLoading(true); setError(null); setCopied(false);
+    try {
+      const prompt = `You are the connection strategist for BNI Insomniacs, a BNI chapter in Dubai. The Visitor Host needs this week's connection digest before the Wednesday meeting on ${MEETING_DATE}.
+
+THIS WEEK'S VISITORS (${thisWeek.length}):
+${thisWeek.length ? thisWeek.map(v => `- ${v.name} | ${v.business || "no company"} | ${v.category || "no category"} / ${v.specialty || ""} | status: ${v.status} | invited by: ${v.invitedBy || "unknown"} | notes: ${v.callNotes || "none"}`).join("\n") : "(none registered yet)"}
+
+OPEN MEMBER ASKS (${openAsks.length}):
+${openAsks.map(a => `- ${a.memberName} (open ${daysOpen(a.date)} days): wants ${askSummary(a) || a.targetCategory}`).join("\n")}
+
+CHAPTER MEMBERS (${members.length}):
+${members.map(m => `${m.name} — ${m.category} / ${m.specialty}`).join("\n")}
+
+Think like a master networker: match visitors to asks AND to members who would naturally refer business to each other (contact spheres, supply chains, shared client types — connections can cross categories). Also pair members whose open asks or specialties complement each other for 1-2-1 meetings.
+
+STRICT RULES:
+- Only use names that appear in the data above. Never invent people.
+- If there are no visitors this week, focus on member 1-2-1 pairings and ask insights.
+- Respond with ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
+{
+  "headline": "One energising sentence summarising this week's biggest connection opportunity",
+  "visitorMatches": [{ "visitorName": "...", "members": ["member name", "member name"], "reason": "specific, concrete reason (max 30 words)" }],
+  "oneToOnes": [{ "memberA": "...", "memberB": "...", "reason": "why this 1-2-1 makes business sense right now (max 30 words)" }],
+  "askInsights": ["short observation about the open asks, e.g. which are going stale or which categories dominate (max 3 items)"],
+  "whatsappMessage": "A short, friendly pre-meeting message (with a couple of emoji) for the chapter leadership WhatsApp group summarising the top visitor-member connections and one suggested 1-2-1. Plain text, under 120 words."
+}
+Include every visitor in visitorMatches (best-effort matches, empty members array if truly nothing fits). Give 3 to 5 oneToOnes.`;
+
+      const parsed = await callClaude(prompt, 2000);
+      setDigest(parsed);
+    } catch (e) {
+      console.error("Digest generation failed:", e);
+      setError("Could not generate the digest. Check the API key in Vercel and try again.");
+    }
+    setLoading(false);
+  };
+
+  const copyWhatsApp = () => {
+    navigator.clipboard?.writeText(digest.whatsappMessage);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const ageBadge = (days) => days >= 42 ? { bg: "#FEE2E2", text: "#991B1B", label: `🔴 ${days}d — going stale` } :
+                            days >= 21 ? { bg: "#FEF3C7", text: "#92400E", label: `🟡 ${days}d open` } :
+                            { bg: "#DBEAFE", text: "#1E40AF", label: `${days}d open` };
+
+  return <div>
+    <Card style={{ marginBottom: 12, background: "#F5F3FF", borderColor: "#8B5CF6" }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#5B21B6", marginBottom: 4 }}>🔗 Connection Engine</div>
+      <div style={{ fontSize: 11, color: "#6D28D9", lineHeight: 1.6 }}>
+        Turns your weekly asks data into action: which visitors can close open asks, which members should book a 1-2-1, and which asks are going stale — plus a ready-to-send WhatsApp digest for chapter leadership.
+      </div>
+    </Card>
+
+    {/* Ask aging — instant, no AI needed */}
+    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>⏳ Open Ask Ageing ({openAsks.length})</div>
+    {openAsks.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 16 }}>No open asks. Capture this week's asks in the Asks tab to power the digest.</div>}
+    {agedAsks.map(a => {
+      const d = daysOpen(a.date);
+      const b = ageBadge(d);
+      return (
+        <Card key={a.id} style={{ marginBottom: 8, padding: 12, borderLeft: `4px solid ${d >= 42 ? "#EF4444" : d >= 21 ? "#F59E0B" : "#3B82F6"}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13 }}>{a.memberName}</div>
+              <div style={{ fontSize: 12, color: "#374151" }}>{askSummary(a) || a.targetCategory}</div>
+              <div style={{ fontSize: 10, color: "#6B7280", marginTop: 2 }}>Since {a.date}</div>
+            </div>
+            <span style={{ background: b.bg, color: b.text, padding: "2px 10px", borderRadius: 20, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>{b.label}</span>
+          </div>
+          {d >= 42 && <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, background: "#FEF2F2", borderRadius: 6, padding: "5px 8px" }}>💬 Suggest {a.memberName.split(" ")[0]} refreshes or re-presents this ask — asks older than 6 weeks rarely get filled without a nudge.</div>}
+        </Card>
+      );
+    })}
+
+    {/* AI digest */}
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 8px" }}>
+      <div style={{ fontWeight: 700, fontSize: 14 }}>🤖 Weekly Connection Digest</div>
+      <button onClick={generate} disabled={loading || (openAsks.length === 0 && thisWeek.length === 0)}
+        style={{ background: "linear-gradient(135deg, #7C3AED, #5B21B6)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: loading ? "wait" : "pointer", opacity: (loading || (openAsks.length === 0 && thisWeek.length === 0)) ? 0.6 : 1 }}>
+        {loading ? "Thinking…" : digest ? "↺ Regenerate" : "✨ Generate Digest"}
+      </button>
+    </div>
+    {openAsks.length === 0 && thisWeek.length === 0 && <div style={{ fontSize: 11, color: "#9CA3AF" }}>Add this week's visitors or open asks first — the digest needs data to work with.</div>}
+    {loading && (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#5B21B6", fontSize: 12, padding: "8px 0" }}>
+        <div style={{ width: 16, height: 16, border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+        Analysing {thisWeek.length} visitors, {openAsks.length} open asks and {members.length} members…
+      </div>
+    )}
+    {error && <div style={{ color: "#991B1B", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+
+    {digest && !loading && <div>
+      <Card style={{ marginBottom: 12, background: "#FFFBEB", borderColor: "#F59E0B" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E", lineHeight: 1.5 }}>💡 {digest.headline}</div>
+      </Card>
+
+      {digest.visitorMatches?.length > 0 && <>
+        <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>👥 Visitor → Member Connections</div>
+        {digest.visitorMatches.map((vm, i) => (
+          <Card key={i} style={{ marginBottom: 8, padding: 12, borderLeft: "4px solid #7C3AED" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{vm.visitorName}
+              {vm.members?.length > 0 && <span style={{ fontWeight: 400, color: "#6B7280" }}> → meet </span>}
+              {vm.members?.length > 0 && <span style={{ color: "#5B21B6" }}>{vm.members.join(", ")}</span>}
+            </div>
+            <div style={{ fontSize: 12, color: "#374151" }}>{vm.members?.length ? vm.reason : "No strong match this week — introduce during open networking."}</div>
+          </Card>
+        ))}
+      </>}
+
+      {digest.oneToOnes?.length > 0 && <>
+        <div style={{ fontWeight: 700, fontSize: 13, margin: "14px 0 8px" }}>🤝 Suggested Member 1-2-1s</div>
+        {digest.oneToOnes.map((p, i) => (
+          <Card key={i} style={{ marginBottom: 8, padding: 12, borderLeft: "4px solid #059669" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{p.memberA} <span style={{ color: "#059669" }}>⇄</span> {p.memberB}</div>
+            <div style={{ fontSize: 12, color: "#374151" }}>{p.reason}</div>
+          </Card>
+        ))}
+      </>}
+
+      {digest.askInsights?.length > 0 && (
+        <Card style={{ margin: "14px 0 12px", background: "#F0F9FF", borderColor: "#38BDF8" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#0C4A6E", marginBottom: 6 }}>📈 Ask Insights</div>
+          {digest.askInsights.map((ins, i) => (
+            <div key={i} style={{ fontSize: 11, color: "#0369A1", lineHeight: 1.6, marginBottom: 3 }}>• {ins}</div>
+          ))}
+        </Card>
+      )}
+
+      {digest.whatsappMessage && (
+        <Card style={{ background: "#F0FDF4", borderColor: "#22C55E" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#15803D" }}>📱 Leadership WhatsApp Digest</div>
+            <button onClick={copyWhatsApp} style={{ background: copied ? "#059669" : "#25D366", color: "#fff", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{copied ? "✓ Copied!" : "📋 Copy for WhatsApp"}</button>
+          </div>
+          <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", margin: 0, fontFamily: "inherit", lineHeight: 1.6, color: "#166534", background: "#fff", borderRadius: 8, padding: 10, border: "1px solid #BBF7D0" }}>{digest.whatsappMessage}</pre>
+        </Card>
+      )}
+    </div>}
+  </div>;
+}
+
 export default function App() {
   const [tab, setTab] = useState(0);
   const [visitors, setVisitors] = useState(INITIAL_VISITORS);
@@ -2219,6 +2380,7 @@ export default function App() {
     <DashboardTab visitors={visitors} asks={asks} members={members} archived={archived} />,
     <VisitorsTab visitors={visitors} setVisitors={setVisitors} asks={asks} members={members} archived={archived} setArchived={setArchived} />,
     <AsksTab asks={asks} setAsks={setAsks} members={members} />,
+    <ConnectionEngineTab visitors={visitors} asks={asks} members={members} />,
     <AIMatchTab visitors={visitors} asks={asks} members={members} />,
     <SeatPlanner visitors={visitors} asks={asks} members={members} />,
     <MembersTab members={members} setMembers={setMembers} />,
@@ -2229,7 +2391,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v5.2</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
