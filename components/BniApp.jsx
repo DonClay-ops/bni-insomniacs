@@ -22,6 +22,14 @@ const getNextWednesday = () => {
 const MEETING_DATE = getNextWednesday();
 
 // ═══════════════════════════════════════════
+// ASK LIFECYCLE — asks auto-archive after 6 weeks but stay available for AI matching
+// ═══════════════════════════════════════════
+const ASK_ACTIVE_DAYS = 42; // 6 weeks
+const askAgeDays = (date) => Math.max(0, Math.floor((new Date(MEETING_DATE) - new Date(date)) / 86400000));
+const isActiveAsk = (a) => a.status === "open" && askAgeDays(a.date) <= ASK_ACTIVE_DAYS;
+const isArchivedAsk = (a) => a.status === "open" && askAgeDays(a.date) > ASK_ACTIVE_DAYS;
+
+// ═══════════════════════════════════════════
 // SHARED CLAUDE API HELPER — correct browser headers, JSON response parsing
 // ═══════════════════════════════════════════
 const callClaude = async (prompt, maxTokens = 1500) => {
@@ -927,7 +935,7 @@ function DashboardTab({ visitors, asks, members, archived }) {
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
       <StatCard label="This Week" value={thisWeek.length} sub="Visitors registered" color="#4338CA" />
       <StatCard label="Members" value={members.length} sub="BNI Insomniacs" color="#065F46" />
-      <StatCard label="Open Asks" value={asks.filter(a => a.status === "open").length} sub="From members" color="#D97706" />
+      <StatCard label="Open Asks" value={asks.filter(isActiveAsk).length} sub="Active (last 6 weeks)" color="#D97706" />
       <StatCard label="Closing Ratio" value={`${ratio}%`} sub={`${applied}/${attended}`} color="#9D174D" />
       <StatCard label="Archived" value={archived.length} sub="Past visitors" color="#6B21A8" />
     </div>
@@ -1845,7 +1853,7 @@ function AsksTab({ asks, setAsks, members }) {
     await supabase.from("asks").update({ status: "fulfilled" }).eq("id", id);
     setAsks(p => p.map(a => a.id === id ? { ...a, status: "fulfilled" } : a));
   };
-  const doDelete = () => { setAsks(p => p.filter(a => a.id !== confirmDelete.id)); setConfirmDelete(null); };
+  const doDelete = async () => { await supabase.from("asks").delete().eq("id", confirmDelete.id); setAsks(p => p.filter(a => a.id !== confirmDelete.id)); setConfirmDelete(null); };
 
   return <div>
     <ConfirmModal open={!!confirmDelete} title="Delete this ask?" message={confirmDelete ? `Delete the ask from ${confirmDelete.memberName}? This cannot be undone.` : ""} confirmLabel="Yes, delete" onConfirm={doDelete} onCancel={() => setConfirmDelete(null)} />
@@ -1916,7 +1924,7 @@ function AsksTab({ asks, setAsks, members }) {
           <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>{a.targetCategory} • {a.notes} • {a.date}</div>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-          <Badge bg={a.status === "open" ? "#FEF3C7" : "#D1FAE5"} text={a.status === "open" ? "#92400E" : "#065F46"} label={a.status === "open" ? "Open" : "Fulfilled"} />
+          <Badge bg={isArchivedAsk(a) ? "#E5E7EB" : a.status === "open" ? "#FEF3C7" : "#D1FAE5"} text={isArchivedAsk(a) ? "#374151" : a.status === "open" ? "#92400E" : "#065F46"} label={isArchivedAsk(a) ? `🗄 Archived (${askAgeDays(a.date)}d old)` : a.status === "open" ? "Open" : "Fulfilled"} />
           {a.status === "open" && <button onClick={() => closeAsk(a.id)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #D1D5DB", borderRadius: 4, cursor: "pointer", background: "#fff" }}>✓ Close</button>}
           <button onClick={() => setConfirmDelete(a)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #FCA5A5", borderRadius: 4, cursor: "pointer", background: "#fff", color: "#991B1B" }}>🗑️</button>
         </div>
@@ -2173,8 +2181,11 @@ function ConnectionEngineTab({ visitors, asks, members }) {
   const [copied, setCopied] = useState(false);
 
   const openAsks = asks.filter(a => a.status === "open");
-  const daysOpen = (d) => Math.max(0, Math.floor((new Date(MEETING_DATE) - new Date(d)) / 86400000));
-  const agedAsks = [...openAsks].sort((a, b) => daysOpen(b.date) - daysOpen(a.date));
+  const activeAsks = openAsks.filter(isActiveAsk);
+  const archivedAsks = openAsks.filter(isArchivedAsk);
+  const [showArchived, setShowArchived] = useState(false);
+  const daysOpen = (d) => askAgeDays(d);
+  const agedAsks = [...activeAsks].sort((a, b) => daysOpen(b.date) - daysOpen(a.date));
   const thisWeek = visitors.filter(v => v.date === MEETING_DATE);
 
   const askSummary = (a) => [a.targetName, a.targetCompany, a.targetRole, a.notes].filter(Boolean).join(" — ");
@@ -2187,13 +2198,18 @@ function ConnectionEngineTab({ visitors, asks, members }) {
 THIS WEEK'S VISITORS (${thisWeek.length}):
 ${thisWeek.length ? thisWeek.map(v => `- ${v.name} | ${v.business || "no company"} | ${v.category || "no category"} / ${v.specialty || ""} | status: ${v.status} | invited by: ${v.invitedBy || "unknown"} | notes: ${v.callNotes || "none"}`).join("\n") : "(none registered yet)"}
 
-OPEN MEMBER ASKS (${openAsks.length}):
-${openAsks.map(a => `- ${a.memberName} (open ${daysOpen(a.date)} days): wants ${askSummary(a) || a.targetCategory}`).join("\n")}
+ACTIVE OPEN ASKS — last 6 weeks (${activeAsks.length}):
+${activeAsks.map(a => `- ${a.memberName} (open ${daysOpen(a.date)} days): wants ${askSummary(a) || a.targetCategory}`).join("\n") || "(none)"}
+
+ARCHIVED ASKS — older than 6 weeks, no longer actively pursued (${archivedAsks.length}):
+${archivedAsks.map(a => `- ${a.memberName} (${daysOpen(a.date)} days old): wanted ${askSummary(a) || a.targetCategory}`).join("\n") || "(none)"}
 
 CHAPTER MEMBERS (${members.length}):
 ${members.map(m => `${m.name} — ${m.category} / ${m.specialty}`).join("\n")}
 
 Think like a master networker: match visitors to asks AND to members who would naturally refer business to each other (contact spheres, supply chains, shared client types — connections can cross categories). Also pair members whose open asks or specialties complement each other for 1-2-1 meetings.
+
+ARCHIVED ASK RULE: match visitors primarily against ACTIVE asks. But also scan the ARCHIVED asks — if this week's visitor fits an archived ask, or even comes close, that is gold: flag it as a revival so the Visitor Host can tell the member their old ask just walked through the door. Only include genuine fits.
 
 STRICT RULES:
 - Only use names that appear in the data above. Never invent people.
@@ -2202,11 +2218,12 @@ STRICT RULES:
 {
   "headline": "One energising sentence summarising this week's biggest connection opportunity",
   "visitorMatches": [{ "visitorName": "...", "members": ["member name", "member name"], "reason": "specific, concrete reason (max 30 words)" }],
+  "archivedAskRevivals": [{ "visitorName": "...", "memberName": "...", "askSummary": "what the member originally asked for", "reason": "why this visitor fits or comes close (max 25 words)" }],
   "oneToOnes": [{ "memberA": "...", "memberB": "...", "reason": "why this 1-2-1 makes business sense right now (max 30 words)" }],
   "askInsights": ["short observation about the open asks, e.g. which are going stale or which categories dominate (max 3 items)"],
-  "whatsappMessage": "A short, friendly pre-meeting message (with a couple of emoji) for the chapter leadership WhatsApp group summarising the top visitor-member connections and one suggested 1-2-1. Plain text, under 120 words."
+  "whatsappMessage": "A short, friendly pre-meeting message (with a couple of emoji) for the chapter leadership WhatsApp group summarising the top visitor-member connections, any archived-ask revival, and one suggested 1-2-1. Plain text, under 120 words."
 }
-Include every visitor in visitorMatches (best-effort matches, empty members array if truly nothing fits). Give 3 to 5 oneToOnes.`;
+archivedAskRevivals must be an empty array if nothing genuinely fits. Include every visitor in visitorMatches (best-effort matches, empty members array if truly nothing fits). Give 3 to 5 oneToOnes.`;
 
       const parsed = await callClaude(prompt, 2000);
       setDigest(parsed);
@@ -2223,7 +2240,7 @@ Include every visitor in visitorMatches (best-effort matches, empty members arra
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const ageBadge = (days) => days >= 42 ? { bg: "#FEE2E2", text: "#991B1B", label: `🔴 ${days}d — going stale` } :
+  const ageBadge = (days) => days >= 35 ? { bg: "#FEE2E2", text: "#991B1B", label: `🔴 ${days}d — archives at 42d` } :
                             days >= 21 ? { bg: "#FEF3C7", text: "#92400E", label: `🟡 ${days}d open` } :
                             { bg: "#DBEAFE", text: "#1E40AF", label: `${days}d open` };
 
@@ -2231,18 +2248,18 @@ Include every visitor in visitorMatches (best-effort matches, empty members arra
     <Card style={{ marginBottom: 12, background: "#F5F3FF", borderColor: "#8B5CF6" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#5B21B6", marginBottom: 4 }}>🔗 Connection Engine</div>
       <div style={{ fontSize: 11, color: "#6D28D9", lineHeight: 1.6 }}>
-        Turns your weekly asks data into action: which visitors can close open asks, which members should book a 1-2-1, and which asks are going stale — plus a ready-to-send WhatsApp digest for chapter leadership.
+        Turns your weekly asks data into action: which visitors can close open asks, which members should book a 1-2-1, and which asks are going stale — plus a ready-to-send WhatsApp digest for chapter leadership. Asks auto-archive after 6 weeks but the AI still watches them for visitor matches.
       </div>
     </Card>
 
     {/* Ask aging — instant, no AI needed */}
-    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>⏳ Open Ask Ageing ({openAsks.length})</div>
-    {openAsks.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 16 }}>No open asks. Capture this week's asks in the Asks tab to power the digest.</div>}
+    <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>⏳ Active Ask Ageing ({activeAsks.length})</div>
+    {activeAsks.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 16 }}>No active asks. Capture this week's asks in the Asks tab to power the digest.</div>}
     {agedAsks.map(a => {
       const d = daysOpen(a.date);
       const b = ageBadge(d);
       return (
-        <Card key={a.id} style={{ marginBottom: 8, padding: 12, borderLeft: `4px solid ${d >= 42 ? "#EF4444" : d >= 21 ? "#F59E0B" : "#3B82F6"}` }}>
+        <Card key={a.id} style={{ marginBottom: 8, padding: 12, borderLeft: `4px solid ${d >= 35 ? "#EF4444" : d >= 21 ? "#F59E0B" : "#3B82F6"}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: 13 }}>{a.memberName}</div>
@@ -2251,10 +2268,25 @@ Include every visitor in visitorMatches (best-effort matches, empty members arra
             </div>
             <span style={{ background: b.bg, color: b.text, padding: "2px 10px", borderRadius: 20, fontSize: 10, fontWeight: 700, whiteSpace: "nowrap" }}>{b.label}</span>
           </div>
-          {d >= 42 && <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, background: "#FEF2F2", borderRadius: 6, padding: "5px 8px" }}>💬 Suggest {a.memberName.split(" ")[0]} refreshes or re-presents this ask — asks older than 6 weeks rarely get filled without a nudge.</div>}
+          {d >= 35 && <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, background: "#FEF2F2", borderRadius: 6, padding: "5px 8px" }}>💬 Suggest {a.memberName.split(" ")[0]} refreshes or re-presents this ask — it auto-archives at 6 weeks.</div>}
         </Card>
       );
     })}
+
+    {/* Archived asks — collapsed, still feed the AI */}
+    {archivedAsks.length > 0 && (
+      <div style={{ marginBottom: 4 }}>
+        <button onClick={() => setShowArchived(!showArchived)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700, color: "#6B7280", padding: "6px 0" }}>
+          {showArchived ? "▾" : "▸"} 🗄 Archived asks ({archivedAsks.length}) — older than 6 weeks, still watched by the AI
+        </button>
+        {showArchived && archivedAsks.map(a => (
+          <Card key={a.id} style={{ marginBottom: 6, padding: 10, background: "#F9FAFB", opacity: 0.75 }}>
+            <div style={{ fontSize: 12 }}><b>{a.memberName}</b> <span style={{ color: "#6B7280" }}>— {askSummary(a) || a.targetCategory}</span></div>
+            <div style={{ fontSize: 10, color: "#9CA3AF" }}>{daysOpen(a.date)} days old · since {a.date}</div>
+          </Card>
+        ))}
+      </div>
+    )}
 
     {/* AI digest */}
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 8px" }}>
@@ -2287,6 +2319,18 @@ Include every visitor in visitorMatches (best-effort matches, empty members arra
               {vm.members?.length > 0 && <span style={{ color: "#5B21B6" }}>{vm.members.join(", ")}</span>}
             </div>
             <div style={{ fontSize: 12, color: "#374151" }}>{vm.members?.length ? vm.reason : "No strong match this week — introduce during open networking."}</div>
+          </Card>
+        ))}
+      </>}
+
+      {digest.archivedAskRevivals?.length > 0 && <>
+        <div style={{ fontWeight: 700, fontSize: 13, margin: "14px 0 8px" }}>🔁 Archived Ask Revivals</div>
+        {digest.archivedAskRevivals.map((rv, i) => (
+          <Card key={i} style={{ marginBottom: 8, padding: 12, borderLeft: "4px solid #D97706", background: "#FFFBEB" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{rv.visitorName} <span style={{ color: "#D97706" }}>fits</span> {rv.memberName}'s old ask</div>
+            <div style={{ fontSize: 11, color: "#92400E", marginBottom: 3 }}>Original ask: {rv.askSummary}</div>
+            <div style={{ fontSize: 12, color: "#374151" }}>{rv.reason}</div>
+            <div style={{ fontSize: 10, color: "#B45309", marginTop: 4 }}>💬 Tell {(rv.memberName || "").split(" ")[0]} their ask just walked through the door.</div>
           </Card>
         ))}
       </>}
@@ -2391,12 +2435,12 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.1</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
         <span>👥 {visitors.filter(v => v.date === MEETING_DATE).length} this week</span>
-        <span>🎯 {asks.filter(a => a.status === "open").length} open asks</span>
+        <span>🎯 {asks.filter(isActiveAsk).length} open asks</span>
         <span>🗄️ {archived.length} archived</span>
       </div>
     </div>
