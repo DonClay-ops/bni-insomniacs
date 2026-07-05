@@ -1855,13 +1855,157 @@ function AsksTab({ asks, setAsks, members }) {
   };
   const doDelete = async () => { await supabase.from("asks").delete().eq("id", confirmDelete.id); setAsks(p => p.filter(a => a.id !== confirmDelete.id)); setConfirmDelete(null); };
 
+  // ═══════════════════════════════════════════
+  // PASTE ASKS — paste one or many members' ask lists; member headers auto-detected
+  // ═══════════════════════════════════════════
+  const [showPasteAsks, setShowPasteAsks] = useState(false);
+  const [askPasteText, setAskPasteText] = useState("");
+  const [askPreview, setAskPreview] = useState(null); // [{memberId, asks:[text]}]
+  const [savingAsks, setSavingAsks] = useState(false);
+  const sortedMembers = [...members].sort((a, b) => a.name.localeCompare(b.name));
+
+  const parseAsksPaste = () => {
+    const bulletRe = /^\s*([*\-•·▪‣►>]|\d+[.)])\s+/;
+    const norm = (s) => s.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+    const findMember = (line) => {
+      const cleaned = line.replace(/['’]s\b/gi, "").replace(/\basks?\b/gi, "").replace(/[–—\-:|]+/g, " ");
+      const n = norm(cleaned);
+      if (!n) return null;
+      let m = members.find(mm => norm(mm.name) === n);
+      if (m) return m;
+      m = members.find(mm => n.startsWith(norm(mm.name)));
+      if (m) return m;
+      const words = n.split(" ").filter(w => w.length > 1);
+      if (words.length >= 2) {
+        m = members.find(mm => { const mn = norm(mm.name); return words.every(w => mn.includes(w)); });
+        if (m) return m;
+      }
+      return null;
+    };
+
+    const lines = askPasteText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const groups = [];
+    let cur = null;
+    for (const raw of lines) {
+      const isBullet = bulletRe.test(raw);
+      if (!isBullet) {
+        const m = findMember(raw);
+        if (m) { cur = { memberId: String(m.id), asks: [] }; groups.push(cur); continue; }
+      }
+      const text = raw.replace(bulletRe, "").trim();
+      if (!text) continue;
+      if (!cur) { cur = { memberId: "", asks: [] }; groups.push(cur); }
+      cur.asks.push(text);
+    }
+    const cleaned = groups.filter(g => g.asks.length > 0);
+    if (!cleaned.length) { alert("Couldn't detect any asks in that text. Paste the list with one ask per line."); return; }
+    setAskPreview(cleaned);
+    setShowPasteAsks(false);
+  };
+
+  const setGroupMember = (gi, memberId) => setAskPreview(p => p.map((g, i) => i === gi ? { ...g, memberId } : g));
+  const removeAskFromGroup = (gi, ai) => setAskPreview(p =>
+    p.map((g, i) => i === gi ? { ...g, asks: g.asks.filter((_, j) => j !== ai) } : g).filter(g => g.asks.length > 0)
+  );
+
+  const totalPreviewAsks = askPreview ? askPreview.reduce((s, g) => s + g.asks.length, 0) : 0;
+  const unassignedGroups = askPreview ? askPreview.filter(g => !g.memberId).length : 0;
+
+  const confirmAskImport = async () => {
+    setSavingAsks(true);
+    try {
+      const today = toYMD(new Date());
+      const rows = askPreview.flatMap(g => {
+        const member = members.find(m => String(m.id) === String(g.memberId));
+        if (!member) return [];
+        return g.asks.map(text => ({
+          member_id: member.id, member_name: member.name, ask_type: "free_text",
+          target_name: "", target_company: "", target_category: "", target_role: "",
+          notes: text, date: today, status: "open",
+        }));
+      });
+      const { data, error } = await supabase.from("asks").insert(rows).select();
+      if (error) throw error;
+      if (data?.length) {
+        setAsks(p => [...p, ...data.map(a => ({
+          ...a, memberId: a.member_id, memberName: a.member_name, askType: a.ask_type,
+          targetName: a.target_name, targetCompany: a.target_company,
+          targetCategory: a.target_category, targetRole: a.target_role,
+        }))]);
+      }
+      setAskPreview(null);
+      setAskPasteText("");
+    } catch (err) {
+      console.error("Ask import failed:", err);
+      alert("Import failed — nothing was saved. Check your connection and try again.");
+    }
+    setSavingAsks(false);
+  };
+
   return <div>
     <ConfirmModal open={!!confirmDelete} title="Delete this ask?" message={confirmDelete ? `Delete the ask from ${confirmDelete.memberName}? This cannot be undone.` : ""} confirmLabel="Yes, delete" onConfirm={doDelete} onCancel={() => setConfirmDelete(null)} />
 
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
       <span style={{ fontWeight: 700, fontSize: 15 }}>Member Asks Database ({asks.length})</span>
-      <button onClick={() => setShowForm(!showForm)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ New Ask</button>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button onClick={() => { setShowPasteAsks(!showPasteAsks); setAskPreview(null); }} style={{ background: showPasteAsks ? "#1B2A4A" : "#fff", color: showPasteAsks ? "#fff" : "#1B2A4A", border: "1px solid #1B2A4A", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📋 Paste Asks</button>
+        <button onClick={() => setShowForm(!showForm)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ New Ask</button>
+      </div>
     </div>
+
+    {showPasteAsks && (
+      <Card style={{ marginBottom: 12, background: "#FEFCE8", borderColor: "#F59E0B" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>📋 Paste member asks</div>
+        <div style={{ fontSize: 11, color: "#B45309", marginBottom: 8, lineHeight: 1.6 }}>
+          One ask per line — companies, people, roles, anything. Start a block with the member's name (e.g. "Jesika Menon – Asks") and every line under it is assigned to them. You can paste several members' lists in one go; you'll confirm each member in the next step.
+        </div>
+        <textarea value={askPasteText} onChange={e => setAskPasteText(e.target.value)} rows={10}
+          placeholder={"Jesika Menon – Asks\n* Nakheel\n* Emaar – Community Manager\n* Repton School\n\nMohit Sharma – Asks\n* Business owners with AED 500K+ savings\n* DIFC family offices"}
+          style={{ width: "100%", boxSizing: "border-box", padding: 10, border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, fontFamily: "monospace", background: "#fff", resize: "vertical" }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button onClick={parseAsksPaste} disabled={!askPasteText.trim()} style={{ background: "#1B2A4A", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: askPasteText.trim() ? "pointer" : "not-allowed", opacity: askPasteText.trim() ? 1 : 0.5 }}>Parse asks →</button>
+          <button onClick={() => { setShowPasteAsks(false); setAskPasteText(""); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+        </div>
+      </Card>
+    )}
+
+    {askPreview && (
+      <Card style={{ marginBottom: 12, background: "#F0FDF4", borderColor: "#22C55E" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#15803D" }}>✓ {totalPreviewAsks} ask{totalPreviewAsks === 1 ? "" : "s"} detected across {askPreview.length} member{askPreview.length === 1 ? "" : "s"}</div>
+          <button onClick={() => setAskPreview(null)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#15803D" }}>✕</button>
+        </div>
+        {askPreview.map((g, gi) => (
+          <div key={gi} style={{ border: "1px solid #BBF7D0", borderRadius: 8, background: "#fff", padding: 10, marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#166534", textTransform: "uppercase", letterSpacing: 0.5 }}>Member:</span>
+              <select value={g.memberId} onChange={e => setGroupMember(gi, e.target.value)}
+                style={{ padding: "5px 10px", border: `1px solid ${g.memberId ? "#86EFAC" : "#FCA5A5"}`, borderRadius: 6, fontSize: 12, background: "#fff", fontWeight: 600 }}>
+                <option value="">⚠ Select member...</option>
+                {sortedMembers.map(m => <option key={m.id} value={String(m.id)}>{m.name} ({m.specialty})</option>)}
+              </select>
+              <span style={{ fontSize: 10, color: "#6B7280" }}>{g.asks.length} ask{g.asks.length === 1 ? "" : "s"}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {g.asks.map((t, ai) => (
+                <span key={ai} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 20, padding: "4px 10px", fontSize: 11, color: "#5B21B6" }}>
+                  🎯 {t}
+                  <button onClick={() => removeAskFromGroup(gi, ai)} title="Remove this ask" style={{ background: "none", border: "none", cursor: "pointer", color: "#8B5CF6", fontSize: 12, padding: 0, lineHeight: 1 }}>✕</button>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={confirmAskImport} disabled={savingAsks || unassignedGroups > 0 || totalPreviewAsks === 0}
+            style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: savingAsks ? "wait" : (unassignedGroups > 0 ? "not-allowed" : "pointer"), opacity: (savingAsks || unassignedGroups > 0) ? 0.6 : 1 }}>
+            {savingAsks ? "Saving…" : `✓ Save ${totalPreviewAsks} ask${totalPreviewAsks === 1 ? "" : "s"}`}
+          </button>
+          <button onClick={() => { setAskPreview(null); setShowPasteAsks(true); }} style={{ background: "#fff", color: "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>← Back to paste</button>
+          {unassignedGroups > 0 && <span style={{ fontSize: 10, color: "#991B1B" }}>Select a member for every group before saving.</span>}
+        </div>
+      </Card>
+    )}
 
     <Card style={{ marginBottom: 12, background: "#EEF2FF", borderColor: "#818CF8" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#4338CA", marginBottom: 4 }}>🎯 How Asks Work</div>
@@ -1920,8 +2064,9 @@ function AsksTab({ asks, setAsks, members }) {
             {a.askType === "specific_person" && <span>🔍 Looking for: <strong>{a.targetName}</strong> {a.targetCompany && `from ${a.targetCompany}`}</span>}
             {a.askType === "specific_company" && <span>🏢 Looking for someone from: <strong>{a.targetCompany}</strong></span>}
             {a.askType === "general_role" && <span>👤 Looking for: <strong>{a.targetRole}</strong></span>}
+            {a.askType === "free_text" && <span>🎯 Ask: <strong>{a.notes}</strong></span>}
           </div>
-          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>{a.targetCategory} • {a.notes} • {a.date}</div>
+          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>{[a.targetCategory, a.askType !== "free_text" ? a.notes : "", a.date].filter(Boolean).join(" • ")}</div>
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
           <Badge bg={isArchivedAsk(a) ? "#E5E7EB" : a.status === "open" ? "#FEF3C7" : "#D1FAE5"} text={isArchivedAsk(a) ? "#374151" : a.status === "open" ? "#92400E" : "#065F46"} label={isArchivedAsk(a) ? `🗄 Archived (${askAgeDays(a.date)}d old)` : a.status === "open" ? "Open" : "Fulfilled"} />
@@ -2435,7 +2580,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.1</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.2</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
