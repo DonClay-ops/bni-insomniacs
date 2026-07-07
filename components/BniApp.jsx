@@ -588,98 +588,51 @@ Be honest and specific. If information is missing (no category, no business name
 }
 
 // ═══════════════════════════════════════════
-// SEAT PLANNER COMPONENT  (v6.3 — real room layout: 15-seat row 1 with 9 visitor slots, 11-seat row 2 with 5 flanked visitor slots, AI member matching)
+// SEAT PLANNER COMPONENT  (unchanged from v1, takes members as prop now)
 // ═══════════════════════════════════════════
 function SeatPlanner({ visitors, asks, members }) {
   const meetingVisitors = visitors.filter(v => v.date === MEETING_DATE);
-
-  // ROOM LAYOUT — actual conference room setup:
-  // Row 1: 15 seats, 9 visitor slots (V1-V9) + 6 member slots (M1-M6)
-  // Row 2: 11 seats, 5 visitor slots (V10-V14), each flanked by members on BOTH sides (M7-M12)
-  const ROW1 = ["M1","V1","V2","M2","V3","V4","M3","V5","M4","V6","V7","M5","V8","V9","M6"];
-  const ROW2 = ["M7","V10","M8","V11","M9","V12","M10","V13","M11","V14","M12"];
-  const VISITOR_SEATS = [...ROW1, ...ROW2].filter(s => s.startsWith("V"));
-  const MEMBER_SEATS = [...ROW1, ...ROW2].filter(s => s.startsWith("M"));
-
-  // Adjacency: for each member seat, which visitor seats sit directly next to it
-  const memberAdjacency = {};
-  [ROW1, ROW2].forEach(row => {
-    row.forEach((seat, idx) => {
-      if (!seat.startsWith("M")) return;
-      const adj = [];
-      if (idx > 0 && row[idx - 1].startsWith("V")) adj.push(row[idx - 1]);
-      if (idx < row.length - 1 && row[idx + 1].startsWith("V")) adj.push(row[idx + 1]);
-      memberAdjacency[seat] = (memberAdjacency[seat] || []).concat(adj);
-    });
-  });
-
   const [seats, setSeats] = useState(() => {
     const assigned = {};
-    meetingVisitors.slice(0, VISITOR_SEATS.length).forEach((v, i) => { assigned[VISITOR_SEATS[i]] = v.id; });
+    meetingVisitors.slice(0, 6).forEach((v, i) => { assigned[`V${i + 1}`] = v.id; });
     return assigned;
   });
-  const [memberSeats, setMemberSeats] = useState({});
-  const [editingMemberSeat, setEditingMemberSeat] = useState(null);
   const [dragging, setDragging] = useState(null);
   const [hovering, setHovering] = useState(null);
 
-  const sortedMembers = [...members].sort((a, b) => a.name.localeCompare(b.name));
-
-  // ⚡ Auto-seat visitors into the 14 visitor slots (row 1 first)
-  const autoSeatVisitors = () => {
-    const assigned = {};
-    meetingVisitors.slice(0, VISITOR_SEATS.length).forEach((v, i) => { assigned[VISITOR_SEATS[i]] = v.id; });
-    setSeats(assigned);
-  };
-
-  // 🤖 AI-Match Members — fills member seats with the best member for the visitors sitting next to them,
-  // scored on open/archived asks + category affinity. No member is used twice.
-  const aiMatchMembers = () => {
-    const usedMembers = new Set();
-    const newMemberSeats = {};
-
-    // Pre-compute match scores per visitor: { visitorId: { memberId: score } }
-    const visitorScores = {};
-    meetingVisitors.forEach(v => {
-      const scores = {};
-      findMatches(v, asks, members).forEach(m => {
-        if (m.member?.id) scores[m.member.id] = Math.max(scores[m.member.id] || 0, m.score);
+  const autoAssign = () => {
+    const memberSeats = {
+      M1: members.find(m => m.category === "Finance & Insurance"),
+      M2: members.find(m => m.category === "Legal & Accounting"),
+      M3: members.find(m => m.category === "Advertising & Marketing"),
+      M4: members.find(m => m.category === "Construction"),
+      M5: members.find(m => m.category === "Health & Wellness"),
+      M6: members.find(m => m.category === "Real Estate Services"),
+    };
+    const newSeats = {};
+    const assigned = new Set();
+    ["V1","V2","V3","V4","V5","V6"].forEach((seatKey, i) => {
+      const adjacentMember = Object.values(memberSeats)[i];
+      if (!adjacentMember) return;
+      let bestVisitor = null;
+      let bestScore = -1;
+      meetingVisitors.forEach(v => {
+        if (assigned.has(v.id)) return;
+        const matches = findMatches(v, asks, members);
+        const memberMatch = matches.find(m => m.member?.id === adjacentMember.id);
+        const catMatch = v.category === adjacentMember.category ? 60 : 0;
+        const score = (memberMatch?.score || 0) + catMatch;
+        if (score > bestScore) { bestScore = score; bestVisitor = v; }
       });
-      members.forEach(m => {
-        if (m.category && m.category === v.category) scores[m.id] = (scores[m.id] || 0) + 40;
-      });
-      visitorScores[v.id] = scores;
+      if (!bestVisitor && meetingVisitors.length > 0) {
+        bestVisitor = meetingVisitors.find(v => !assigned.has(v.id)) || null;
+      }
+      if (bestVisitor) {
+        newSeats[seatKey] = bestVisitor.id;
+        assigned.add(bestVisitor.id);
+      }
     });
-
-    // Process member seats with the most adjacent seated visitors first
-    const seatOrder = MEMBER_SEATS.slice().sort((a, b) => {
-      const cnt = (s) => (memberAdjacency[s] || []).filter(vs => seats[vs]).length;
-      return cnt(b) - cnt(a);
-    });
-
-    seatOrder.forEach(seatKey => {
-      const adjVisitorIds = (memberAdjacency[seatKey] || []).map(vs => seats[vs]).filter(Boolean);
-      if (adjVisitorIds.length === 0) return;
-      let best = null, bestScore = 0;
-      members.forEach(m => {
-        if (usedMembers.has(m.id)) return;
-        const score = adjVisitorIds.reduce((s, vid) => s + (visitorScores[vid]?.[m.id] || 0), 0);
-        if (score > bestScore) { bestScore = score; best = m; }
-      });
-      if (best) { newMemberSeats[seatKey] = best.id; usedMembers.add(best.id); }
-    });
-    setMemberSeats(newMemberSeats);
-  };
-
-  const setMemberForSeat = (seatKey, memberId) => {
-    setMemberSeats(prev => {
-      const next = { ...prev };
-      if (!memberId) { delete next[seatKey]; return next; }
-      // Prevent the same member sitting in two seats
-      Object.keys(next).forEach(k => { if (next[k] === Number(memberId) && k !== seatKey) delete next[k]; });
-      next[seatKey] = Number(memberId);
-      return next;
-    });
+    setSeats(newSeats);
   };
 
   const handleDrop = (targetSeat) => {
@@ -697,7 +650,6 @@ function SeatPlanner({ visitors, asks, members }) {
   };
 
   const getVisitor = (seatKey) => meetingVisitors.find(v => v.id === seats[seatKey]);
-  const getMember = (seatKey) => members.find(m => m.id === memberSeats[seatKey]);
   const unassigned = meetingVisitors.filter(v => !Object.values(seats).includes(v.id));
 
   const catColor = (cat) => {
@@ -712,105 +664,88 @@ function SeatPlanner({ visitors, asks, members }) {
     return map[cat] || "#6B7280";
   };
 
-  const SeatChip = ({ seatKey }) => {
-    const isVisitor = seatKey.startsWith("V");
+  const visitorSeats = ["V1","V2","V3","V4","V5","V6"];
+  const displayMembers = [
+    members.find(m => m.specialty === "Wealth Management"),
+    members.find(m => m.specialty === "Residential Mortgages"),
+    members.find(m => m.specialty === "General Insurance including Employee Benefits"),
+    members.find(m => m.specialty === "Commercial Real Estate"),
+    members.find(m => m.specialty === "Architect"),
+    members.find(m => m.specialty === "Social Media"),
+    members.find(m => m.specialty === "Search Engine Optimisation"),
+    members.find(m => m.specialty === "Commercial/Retail Interior Design & Fitout"),
+    members.find(m => m.specialty === "Builder/General Contractor"),
+    members.find(m => m.specialty === "Construction Specialist"),
+  ].filter(Boolean);
+
+  const SeatChip = ({ seatKey, isVisitor }) => {
     const v = isVisitor ? getVisitor(seatKey) : null;
-    const m = !isVisitor ? getMember(seatKey) : null;
+    const m = !isVisitor ? displayMembers[parseInt(seatKey.replace("M","")) - 1] : null;
     const isOver = hovering === seatKey;
-    const isEditing = editingMemberSeat === seatKey;
     return (
-      <div onDragOver={(e) => { if (isVisitor) { e.preventDefault(); setHovering(seatKey); } }} onDragLeave={() => setHovering(null)} onDrop={() => isVisitor && handleDrop(seatKey)}
-        onClick={() => { if (!isVisitor) setEditingMemberSeat(isEditing ? null : seatKey); }}
-        style={{ width: 58, minHeight: 66, flexShrink: 0, borderRadius: 8, border: isOver ? "2px dashed #8B1A1A" : isEditing ? "2px solid #F59E0B" : isVisitor ? "2px solid #8B1A1A" : "2px solid #1B2A4A", background: isOver ? "#FFF1F1" : isEditing ? "#FFFBEB" : isVisitor ? (v ? "#FFF7F7" : "#FFF1F1") : (m ? "#EEF2FF" : "#F8FAFC"), padding: "5px 3px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", transition: "all 0.15s", position: "relative", cursor: isVisitor ? "default" : "pointer" }}>
-        <div style={{ position: "absolute", top: 2, left: 4, fontSize: 7, fontWeight: 800, color: isVisitor ? "#8B1A1A" : "#1B2A4A", opacity: 0.6 }}>{seatKey}</div>
+      <div onDragOver={(e) => { e.preventDefault(); setHovering(seatKey); }} onDragLeave={() => setHovering(null)} onDrop={() => isVisitor && handleDrop(seatKey)}
+        style={{ width: isVisitor ? 90 : 82, minHeight: isVisitor ? 72 : 64, borderRadius: 8, border: isOver ? "2px dashed #8B1A1A" : isVisitor ? "2px solid #8B1A1A" : "2px solid #1B2A4A", background: isOver ? "#FFF1F1" : isVisitor ? (v ? "#FFF7F7" : "#FFF1F1") : (m ? "#EEF2FF" : "#F8FAFC"), padding: "6px 5px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", transition: "all 0.15s", position: "relative" }}>
+        <div style={{ position: "absolute", top: 3, left: 5, fontSize: 8, fontWeight: 800, color: isVisitor ? "#8B1A1A" : "#1B2A4A", opacity: 0.6 }}>{seatKey}</div>
         {isVisitor && v && (
           <>
             <div draggable onDragStart={() => setDragging(v.id)} style={{ cursor: "grab" }}>
-              <div style={{ width: 24, height: 24, borderRadius: "50%", background: catColor(v.category), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", marginBottom: 2 }}>
+              <div style={{ width: 28, height: 28, borderRadius: "50%", background: catColor(v.category), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "#fff", marginBottom: 3 }}>
                 {v.name.split(" ").map(n => n[0]).join("").slice(0,2)}
               </div>
             </div>
-            <div style={{ fontSize: 8, fontWeight: 700, color: "#111", textAlign: "center", lineHeight: 1.15 }}>{v.name.split(" ")[0]}</div>
-            <div style={{ fontSize: 6.5, color: "#6B7280", textAlign: "center", lineHeight: 1.15, marginTop: 1 }}>{(v.specialty || v.category || "").split(" ").slice(0,2).join(" ")}</div>
+            <div style={{ fontSize: 8.5, fontWeight: 700, color: "#111", textAlign: "center", lineHeight: 1.2 }}>{v.name.split(" ")[0]}</div>
+            <div style={{ fontSize: 7.5, color: "#6B7280", textAlign: "center", lineHeight: 1.2, marginTop: 1 }}>{v.specialty || v.category}</div>
           </>
         )}
-        {isVisitor && !v && <div style={{ fontSize: 8, color: "#9CA3AF", textAlign: "center" }}>{isOver ? "Drop" : "Empty"}</div>}
+        {isVisitor && !v && <div style={{ fontSize: 9, color: "#9CA3AF", textAlign: "center" }}>{isOver ? "Drop here" : "Empty"}</div>}
         {!isVisitor && m && (
           <>
-            <div style={{ width: 22, height: 22, borderRadius: "50%", background: catColor(m.category), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8.5, fontWeight: 800, color: "#fff", marginBottom: 2 }}>
+            <div style={{ width: 26, height: 26, borderRadius: "50%", background: catColor(m.category), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800, color: "#fff", marginBottom: 3 }}>
               {m.name.split(" ").map(n => n[0]).join("").slice(0,2)}
             </div>
-            <div style={{ fontSize: 7.5, fontWeight: 700, color: "#1B2A4A", textAlign: "center", lineHeight: 1.15 }}>{m.name.split(" ")[0]}</div>
-            <div style={{ fontSize: 6.5, color: "#6B7280", textAlign: "center", lineHeight: 1.15, marginTop: 1 }}>{m.specialty?.split(" ").slice(0,2).join(" ")}</div>
+            <div style={{ fontSize: 8, fontWeight: 700, color: "#1B2A4A", textAlign: "center", lineHeight: 1.2 }}>{m.name.split(" ")[0]}</div>
+            <div style={{ fontSize: 7, color: "#6B7280", textAlign: "center", lineHeight: 1.2, marginTop: 1 }}>{m.specialty?.split(" ").slice(0,2).join(" ")}</div>
           </>
         )}
-        {!isVisitor && !m && <div style={{ fontSize: 7.5, color: "#9CA3AF", textAlign: "center", lineHeight: 1.2 }}>Member<br/>(tap)</div>}
       </div>
     );
   };
 
-  const editingAdjVisitors = editingMemberSeat ? (memberAdjacency[editingMemberSeat] || []).map(vs => getVisitor(vs)).filter(Boolean) : [];
-
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: "#111" }}>🪑 Strategic Seat Planner</div>
-          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>Row 1: 15 seats (9 visitors). Row 2: 11 seats (5 visitors, member on each side). Drag visitors • tap a member seat to assign.</div>
+          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>Drag visitors to swap seats. Inner U = visitor row (6 seats). Outer = member seats (10).</div>
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={autoSeatVisitors} style={{ background: "#fff", color: "#8B1A1A", border: "1.5px solid #8B1A1A", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>⚡ Seat Visitors</button>
-          <button onClick={aiMatchMembers} style={{ background: "linear-gradient(135deg, #1B2A4A, #8B1A1A)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>🤖 AI-Match Members</button>
-        </div>
+        <button onClick={autoAssign} style={{ background: "linear-gradient(135deg, #1B2A4A, #8B1A1A)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>⚡ Auto-Assign by Affinity</button>
       </div>
-      <Card style={{ padding: 16, background: "#F8FAFC", position: "relative", overflowX: "auto" }}>
-        <div style={{ minWidth: 960 }}>
-          <div style={{ textAlign: "center", fontSize: 10, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: 2, marginBottom: 12 }}>Conference Room — BNI Insomniacs</div>
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-            <div style={{ background: "#1B2A4A", color: "#fff", borderRadius: 8, padding: "6px 32px", fontSize: 10, fontWeight: 700, letterSpacing: 1 }}>📋 PRESENTER / EDUCATION CHAIR</div>
+      <Card style={{ padding: 20, background: "#F8FAFC", position: "relative", overflow: "hidden" }}>
+        <div style={{ textAlign: "center", fontSize: 10, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: 2, marginBottom: 14 }}>Conference Room — BNI Insomniacs</div>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+          <div style={{ background: "#1B2A4A", color: "#fff", borderRadius: 8, padding: "6px 32px", fontSize: 10, fontWeight: 700, letterSpacing: 1 }}>📋 PRESENTER / EDUCATION CHAIR</div>
+        </div>
+        <div style={{ position: "relative", margin: "0 auto", maxWidth: 680 }}>
+          <div style={{ display: "flex", gap: 6, justifyContent: "space-between", marginBottom: 6 }}>
+            {[0,1,2,3,4].map(i => <SeatChip key={`M${i+1}`} seatKey={`M${i+1}`} isVisitor={false} />)}
           </div>
-
-          {/* ROW 1 — 15 seats, 9 visitor slots */}
-          <div style={{ fontSize: 8.5, fontWeight: 700, color: "#8B1A1A", textAlign: "center", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Row 1 — 15 seats · 9 visitor slots</div>
-          <div style={{ display: "flex", gap: 4, justifyContent: "center", marginBottom: 10 }}>
-            {ROW1.map(sKey => <SeatChip key={sKey} seatKey={sKey} />)}
+          <div style={{ background: "linear-gradient(135deg, #1B2A4A 0%, #243555 100%)", borderRadius: 12, padding: "10px 20px", margin: "0 4px", minHeight: 70, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 20px rgba(27,42,74,0.3)", marginBottom: 6 }}>
+            <div style={{ color: "rgba(255,255,255,0.15)", fontSize: 13, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase" }}>◈ CONFERENCE TABLE ◈</div>
           </div>
-
-          {/* ROW 2 — 11 seats, 5 visitors each flanked by members */}
-          <div style={{ fontSize: 8.5, fontWeight: 700, color: "#1B2A4A", textAlign: "center", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Row 2 — 11 seats · 5 visitor slots (member on both sides)</div>
-          <div style={{ display: "flex", gap: 4, justifyContent: "center", marginBottom: 6 }}>
-            {ROW2.map(sKey => <SeatChip key={sKey} seatKey={sKey} />)}
+          <div style={{ background: "rgba(139,26,26,0.06)", borderRadius: 10, padding: "8px 4px", border: "1.5px dashed rgba(139,26,26,0.25)", marginBottom: 6 }}>
+            <div style={{ fontSize: 8.5, fontWeight: 700, color: "#8B1A1A", textAlign: "center", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>★ Visitor Row — Inner U (drag to rearrange)</div>
+            <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
+              {visitorSeats.map(sKey => <SeatChip key={sKey} seatKey={sKey} isVisitor={true} />)}
+            </div>
           </div>
-
-          <div style={{ textAlign: "center", marginTop: 10 }}>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 20, padding: "4px 16px", fontSize: 10, color: "#6B7280", fontWeight: 600 }}>↑ ENTRANCE / REGISTRATION TABLE ↑</div>
+          <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
+            {[5,6,7,8,9].map(i => <SeatChip key={`M${i+1}`} seatKey={`M${i+1}`} isVisitor={false} />)}
           </div>
+        </div>
+        <div style={{ textAlign: "center", marginTop: 12 }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 20, padding: "4px 16px", fontSize: 10, color: "#6B7280", fontWeight: 600 }}>↑ ENTRANCE / REGISTRATION TABLE ↑</div>
         </div>
       </Card>
-
-      {/* MEMBER SEAT EDITOR */}
-      {editingMemberSeat && (
-        <Card style={{ marginTop: 12, background: "#FFFBEB", borderColor: "#F59E0B" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, color: "#92400E" }}>Assign member to seat {editingMemberSeat}</div>
-            <button onClick={() => setEditingMemberSeat(null)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#92400E" }}>✕</button>
-          </div>
-          {editingAdjVisitors.length > 0 && (
-            <div style={{ fontSize: 11, color: "#B45309", marginBottom: 8 }}>
-              Sitting next to: {editingAdjVisitors.map(v => `${v.name} (${v.specialty || v.category})`).join(" • ")}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <select value={memberSeats[editingMemberSeat] || ""} onChange={e => setMemberForSeat(editingMemberSeat, e.target.value)}
-              style={{ padding: "7px 10px", border: "1px solid #FCD34D", borderRadius: 8, fontSize: 12, background: "#fff", fontWeight: 600, minWidth: 260 }}>
-              <option value="">— No member assigned —</option>
-              {sortedMembers.map(m => <option key={m.id} value={m.id}>{m.name} ({m.specialty})</option>)}
-            </select>
-            {memberSeats[editingMemberSeat] && <button onClick={() => setMemberForSeat(editingMemberSeat, "")} style={{ background: "#fff", color: "#991B1B", border: "1px solid #FCA5A5", borderRadius: 8, padding: "7px 12px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Clear seat</button>}
-            <button onClick={() => setEditingMemberSeat(null)} style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Done</button>
-          </div>
-        </Card>
-      )}
 
       {unassigned.length > 0 && (
         <Card style={{ marginTop: 12, background: "#FFF7ED", borderColor: "#F59E0B" }}>
@@ -844,7 +779,7 @@ function PrintBox({ label }) {
   );
 }
 
-function PrintableVisitorList({ visitors, meetingDate, asks, members }) {
+function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches }) {
   const formatted = (() => {
     const d = new Date(meetingDate + "T00:00:00");
     return d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -886,6 +821,7 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members }) {
         </thead>
         <tbody>
           {visitors.map((v, i) => {
+            const ai = aiMatches?.[String(v.id)] || [];
             const topMatches = getTopMatches(v);
             return (
               <tr key={v.id} style={{ background: i % 2 === 0 ? "#fff" : "#F7F8FB", borderBottom: "1px solid #D1D5DB", verticalAlign: "top" }}>
@@ -904,7 +840,24 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members }) {
                 <td style={{ padding: "9px 8px", color: "#374151", fontSize: 12 }}>{v.invitedBy || "—"}</td>
                 <td style={{ padding: "9px 8px", color: "#374151", fontSize: 11 }}>{v.phone || "—"}</td>
                 <td style={{ padding: "9px 8px" }}>
-                  {topMatches.length === 0 ? <span style={{ color: "#9CA3AF", fontSize: 11 }}>—</span> : (
+                  {ai.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {ai.map((m, mi) => {
+                        const mem = members.find(mm => mm.name.toLowerCase() === (m.memberName || "").toLowerCase());
+                        return (
+                          <div key={mi} style={{ display: "flex", alignItems: "flex-start", gap: 5 }}>
+                            <div style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, marginTop: 3, background: m.source === "ask" ? "#EF4444" : "#7C3AED" }} />
+                            <div>
+                              <span style={{ fontWeight: 800, fontSize: 11, color: "#111" }}>{m.memberName}</span>
+                              <span style={{ fontSize: 10, color: "#6B7280", marginLeft: 4 }}>{m.source === "ask" ? "★ Ask" : "🤖 Synergy"}</span>
+                              {mem && <div style={{ fontSize: 10, color: "#9CA3AF" }}>{mem.specialty}</div>}
+                              {m.reason && <div style={{ fontSize: 10, color: "#6B7280", fontStyle: "italic" }}>{m.reason}</div>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : topMatches.length === 0 ? <span style={{ color: "#9CA3AF", fontSize: 11 }}>—</span> : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {topMatches.map((m, mi) => (
                         <div key={mi} style={{ display: "flex", alignItems: "flex-start", gap: 5 }}>
@@ -1045,6 +998,11 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [activePanel, setActivePanel] = useState({});  // { [visitorId]: 'brief' | 'validate' }
 
+  // ── Print View AI-Match: { [visitorId]: [{ memberName, reason, source }] } ──
+  const [printMatches, setPrintMatches] = useState({});
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [matchError, setMatchError] = useState("");
+
   const allCategoriesPresent = [...new Set(members.map(m => m.category))].sort();
 
   useEffect(() => {
@@ -1058,6 +1016,60 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
 
   const allDates = [...new Set(visitors.map(v => v.date))].sort().reverse();
   const printVisitors = visitors.filter(v => v.date === printDate);
+
+  // ═══════════════════════════════════════════
+  // PRINT VIEW AI-MATCH — fills "BNI Matches — Introduce To" using asks + full member list
+  // ═══════════════════════════════════════════
+  const runPrintAIMatch = async () => {
+    if (printVisitors.length === 0) return;
+    setMatchLoading(true);
+    setMatchError("");
+    try {
+      const openAsks = asks.filter(a => a.status === "open");
+      const visitorLines = printVisitors.map(v =>
+        `- id:${v.id} | ${v.name} | Business: ${v.business || "?"} | Category: ${v.category || "?"} | Specialty: ${v.specialty || "?"}`
+      ).join("\n");
+      const askLines = openAsks.length === 0 ? "(none)" : openAsks.map(a =>
+        `- ${a.memberName} is looking for: ${[a.targetName, a.targetCompany, a.targetRole, a.targetCategory].filter(Boolean).join(" / ") || "?"}${a.notes ? ` — "${a.notes}"` : ""}`
+      ).join("\n");
+      const memberLines = members.map(m => `- ${m.name} | ${m.category} | ${m.specialty}`).join("\n");
+
+      const prompt = `You are the introduction-matching engine for BNI Insomniacs, a BNI chapter in Dubai. For each visitor attending this week's meeting, recommend 1-3 chapter members they should be introduced to.
+
+VISITORS THIS WEEK:
+${visitorLines}
+
+OPEN MEMBER ASKS (highest priority — if a visitor could fulfil an ask, always match them):
+${askLines}
+
+CHAPTER MEMBERS (only recommend names EXACTLY as written here):
+${memberLines}
+
+MATCHING RULES:
+1. First priority: visitors who could fulfil an open ask → source "ask".
+2. Second priority: strong business synergy — complementary services, same client base, contact-sphere overlap, likely referral partners → source "synergy".
+3. Every visitor must get at least 1 match; give 2-3 where genuinely useful. Never invent member names.
+4. Do NOT match a visitor to the member who invited them.
+5. Keep each reason under 12 words, specific and actionable.
+
+Respond with ONLY valid JSON, no markdown, no preamble:
+{"matches":[{"visitorId":"<id exactly as given>","introduceTo":[{"memberName":"<exact member name>","reason":"<short reason>","source":"ask" or "synergy"}]}]}`;
+
+      const result = await callClaude(prompt, 3000);
+      const memberNamesLower = members.map(m => m.name.toLowerCase());
+      const map = {};
+      (result.matches || []).forEach(m => {
+        const valid = (m.introduceTo || []).filter(x => x.memberName && memberNamesLower.includes(x.memberName.toLowerCase())).slice(0, 3);
+        if (valid.length) map[String(m.visitorId)] = valid;
+      });
+      setPrintMatches(prev => ({ ...prev, ...map }));
+      if (Object.keys(map).length === 0) setMatchError("AI returned no usable matches — try again.");
+    } catch (e) {
+      console.error("Print AI-Match failed:", e);
+      setMatchError(e.message || "AI match failed — check the API key and model string.");
+    }
+    setMatchLoading(false);
+  };
 
   const addVisitor = async () => {
     if (!form.name || !form.business) return;
@@ -1693,15 +1705,32 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 11, color: "#166534" }}><strong>{printVisitors.length}</strong> visitor{printVisitors.length !== 1 ? "s" : ""} on this date</div>
           </div>
+          <button
+            onClick={runPrintAIMatch}
+            disabled={matchLoading || printVisitors.length === 0}
+            title="AI matches each visitor to members using open asks and the full member list"
+            style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "9px 20px", fontSize: 13, fontWeight: 700, cursor: (matchLoading || printVisitors.length === 0) ? "wait" : "pointer", opacity: (matchLoading || printVisitors.length === 0) ? 0.6 : 1, minWidth: 160 }}>
+            {matchLoading ? "🤖 Matching…" : Object.keys(printMatches).length > 0 ? "↺ Re-run AI Match" : "🤖 AI-Match Visitors"}
+          </button>
           <button onClick={() => setShowPrintModal(true)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "9px 20px", fontSize: 13, fontWeight: 700, cursor: "pointer", minWidth: 160 }}>
             🖨️ Open Print View
           </button>
         </div>
+        {matchLoading && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#5B21B6", fontSize: 12, marginTop: 10 }}>
+            <div style={{ width: 14, height: 14, border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            Matching {printVisitors.length} visitor{printVisitors.length !== 1 ? "s" : ""} against {asks.filter(a => a.status === "open").length} open asks and {members.length} members…
+          </div>
+        )}
+        {matchError && <div style={{ color: "#991B1B", fontSize: 12, marginTop: 8 }}>⚠️ {matchError}</div>}
+        {!matchLoading && Object.keys(printMatches).length > 0 && (
+          <div style={{ fontSize: 11, color: "#166534", marginTop: 8 }}>✅ AI matches loaded — they now appear in the "BNI Matches — Introduce To" column below and in the print view. (Session only — re-run after a page refresh.)</div>
+        )}
       </Card>
       <div style={{ border: "2px solid #E5E7EB", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
         <div style={{ background: "#374151", color: "#9CA3AF", fontSize: 10, padding: "5px 14px", fontWeight: 600, letterSpacing: 1, textTransform: "uppercase" }}>Preview — A4 Landscape</div>
         <div id="bni-print-area">
-          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} />
+          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} />
         </div>
       </div>
     </>}
@@ -1720,7 +1749,7 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
           <button onClick={() => setShowPrintModal(false)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>✕ Close</button>
         </div>
         <div id="bni-modal-print-area">
-          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} />
+          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} />
         </div>
         <style>{`
           @media print {
@@ -1898,13 +1927,6 @@ function AsksTab({ asks, setAsks, members }) {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ memberId: "", askType: "general_role", targetName: "", targetCompany: "", targetCategory: "", targetRole: "", notes: "" });
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [showArchived, setShowArchived] = useState(false);
-
-  // Sort + split asks: open (active) earliest-first, then fulfilled, archived behind a toggle
-  const byDateAsc = (a, b) => new Date(a.date) - new Date(b.date);
-  const activeAsks = asks.filter(isActiveAsk).sort(byDateAsc);
-  const fulfilledAsks = asks.filter(a => a.status === "fulfilled").sort(byDateAsc);
-  const archivedAsks = asks.filter(isArchivedAsk).sort(byDateAsc);
 
   const allCategories = [...new Set(members.map(m => m.category))].sort();
 
@@ -2128,50 +2150,25 @@ function AsksTab({ asks, setAsks, members }) {
       <button onClick={addAsk} style={{ marginTop: 10, background: "#059669", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Save Ask</button>
     </Card>}
 
-    {(() => {
-      const renderAskCard = (a) => <Card key={a.id} style={{ marginBottom: 8, padding: 12, opacity: a.status === "fulfilled" ? 0.5 : 1 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, fontSize: 13 }}>{a.memberName}</div>
-            <div style={{ fontSize: 12, color: "#374151", marginTop: 2 }}>
-              {a.askType === "specific_person" && <span>🔍 Looking for: <strong>{a.targetName}</strong> {a.targetCompany && `from ${a.targetCompany}`}</span>}
-              {a.askType === "specific_company" && <span>🏢 Looking for someone from: <strong>{a.targetCompany}</strong></span>}
-              {a.askType === "general_role" && <span>👤 Looking for: <strong>{a.targetRole}</strong></span>}
-              {a.askType === "free_text" && <span>🎯 Ask: <strong>{a.notes}</strong></span>}
-            </div>
-            <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>{[a.targetCategory, a.askType !== "free_text" ? a.notes : "", a.date].filter(Boolean).join(" • ")}</div>
+    {asks.map(a => <Card key={a.id} style={{ marginBottom: 8, padding: 12, opacity: a.status === "fulfilled" ? 0.5 : 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 700, fontSize: 13 }}>{a.memberName}</div>
+          <div style={{ fontSize: 12, color: "#374151", marginTop: 2 }}>
+            {a.askType === "specific_person" && <span>🔍 Looking for: <strong>{a.targetName}</strong> {a.targetCompany && `from ${a.targetCompany}`}</span>}
+            {a.askType === "specific_company" && <span>🏢 Looking for someone from: <strong>{a.targetCompany}</strong></span>}
+            {a.askType === "general_role" && <span>👤 Looking for: <strong>{a.targetRole}</strong></span>}
+            {a.askType === "free_text" && <span>🎯 Ask: <strong>{a.notes}</strong></span>}
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-            <Badge bg={isArchivedAsk(a) ? "#E5E7EB" : a.status === "open" ? "#FEF3C7" : "#D1FAE5"} text={isArchivedAsk(a) ? "#374151" : a.status === "open" ? "#92400E" : "#065F46"} label={isArchivedAsk(a) ? `🗄 Archived (${askAgeDays(a.date)}d old)` : a.status === "open" ? "Open" : "Fulfilled"} />
-            {a.status === "open" && <button onClick={() => closeAsk(a.id)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #D1D5DB", borderRadius: 4, cursor: "pointer", background: "#fff" }}>✓ Close</button>}
-            <button onClick={() => setConfirmDelete(a)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #FCA5A5", borderRadius: 4, cursor: "pointer", background: "#fff", color: "#991B1B" }}>🗑️</button>
-          </div>
+          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>{[a.targetCategory, a.askType !== "free_text" ? a.notes : "", a.date].filter(Boolean).join(" • ")}</div>
         </div>
-      </Card>;
-
-      return <>
-        {/* OPEN ASKS — earliest first */}
-        <div style={{ fontSize: 12, fontWeight: 800, color: "#92400E", margin: "4px 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>🔥 Open Asks ({activeAsks.length}) — oldest first</div>
-        {activeAsks.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 12 }}>No open asks right now.</div>}
-        {activeAsks.map(renderAskCard)}
-
-        {/* FULFILLED ASKS */}
-        {fulfilledAsks.length > 0 && <>
-          <div style={{ fontSize: 12, fontWeight: 800, color: "#065F46", margin: "16px 0 8px", textTransform: "uppercase", letterSpacing: 0.5 }}>✓ Fulfilled ({fulfilledAsks.length})</div>
-          {fulfilledAsks.map(renderAskCard)}
-        </>}
-
-        {/* ARCHIVED ASKS — behind a toggle */}
-        {archivedAsks.length > 0 && <div style={{ marginTop: 16 }}>
-          <button onClick={() => setShowArchived(s => !s)}
-            style={{ width: "100%", background: showArchived ? "#374151" : "#F3F4F6", color: showArchived ? "#fff" : "#374151", border: "1px solid #D1D5DB", borderRadius: 8, padding: "10px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", textAlign: "left", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span>🗄 Archived Asks ({archivedAsks.length}) — open for 6+ weeks, still used for AI matching</span>
-            <span>{showArchived ? "▲ Hide" : "▼ Show"}</span>
-          </button>
-          {showArchived && <div style={{ marginTop: 8 }}>{archivedAsks.map(renderAskCard)}</div>}
-        </div>}
-      </>;
-    })()}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+          <Badge bg={isArchivedAsk(a) ? "#E5E7EB" : a.status === "open" ? "#FEF3C7" : "#D1FAE5"} text={isArchivedAsk(a) ? "#374151" : a.status === "open" ? "#92400E" : "#065F46"} label={isArchivedAsk(a) ? `🗄 Archived (${askAgeDays(a.date)}d old)` : a.status === "open" ? "Open" : "Fulfilled"} />
+          {a.status === "open" && <button onClick={() => closeAsk(a.id)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #D1D5DB", borderRadius: 4, cursor: "pointer", background: "#fff" }}>✓ Close</button>}
+          <button onClick={() => setConfirmDelete(a)} style={{ fontSize: 10, padding: "3px 8px", border: "1px solid #FCA5A5", borderRadius: 4, cursor: "pointer", background: "#fff", color: "#991B1B" }}>🗑️</button>
+        </div>
+      </div>
+    </Card>)}
   </div>;
 }
 
@@ -2677,7 +2674,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.3</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.4</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
