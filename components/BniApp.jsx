@@ -30,6 +30,142 @@ const isActiveAsk = (a) => a.status === "open" && askAgeDays(a.date) <= ASK_ACTI
 const isArchivedAsk = (a) => a.status === "open" && askAgeDays(a.date) > ASK_ACTIVE_DAYS;
 
 // ═══════════════════════════════════════════
+// UAE OPEN CATEGORY REFERENCE — categories filled in other UAE BNI chapters but
+// NOT held by any BNI Insomniacs member.
+// Source: BNI_All_Members_Consolidated_v5.xlsx (37 UAE chapters, 1,085 members, Jul 2026).
+// Format: [category, categoryGroup, chaptersFilledIn, membersNationwide], sorted by demand.
+// The scan cross-checks this list against the LIVE member roster, so a category
+// disappears automatically once an Insomniacs member fills it.
+// ═══════════════════════════════════════════
+const UAE_OPEN_CATEGORY_POOL = [
+  ["CRM & ERP Solutions", "Computer & Programming", 17, 17],
+  ["Executive Recruitment", "Employment Activities", 11, 11],
+  ["Property Maintenance", "Real Estate Services", 10, 10],
+  ["Fine Jewelry", "Retail & Wholesale", 9, 9],
+  ["Gifts", "Retail & Wholesale", 8, 10],
+  ["Financial Investments", "Finance & Insurance", 7, 7],
+  ["Management Consulting", "Consulting", 7, 7],
+  ["Sign Company", "Advertising & Marketing", 7, 7],
+  ["IT Consultants", "Computer & Programming", 6, 8],
+  ["Photography - Corporate Events, Wedding Etc", "Advertising & Marketing", 6, 6],
+  ["Telecommunications Products/Services", "Telecommunications", 6, 6],
+  ["Business Consultancy - Organization & Process", "Consulting", 5, 5],
+  ["Interior Decorating", "Construction", 5, 5],
+  ["Lighting Retailers", "Retail & Wholesale", 5, 5],
+  ["Marketing Consultancy", "Advertising & Marketing", 5, 5],
+  ["Medical Services", "Health & Wellness", 5, 5],
+  ["Advertising Agency", "Advertising & Marketing", 4, 4],
+  ["Event Planner", "Event & Business Service", 4, 4],
+  ["HVAC - Heating & Air", "Construction", 4, 4],
+  ["Litigation", "Legal & Accounting", 4, 4],
+  ["App Developer", "Computer & Programming", 3, 3],
+  ["Business Consultancy - Quality Management", "Consulting", 3, 3],
+  ["Business Training/Coach", "Training & Coaching", 3, 3],
+  ["Electrical Equipment", "Retail & Wholesale", 3, 3],
+  ["Exhibitions, Conference & Seminar Organiser", "Event & Business Service", 3, 3],
+  ["Furniture Retailer", "Retail & Wholesale", 3, 3],
+  ["Government Services", "Legal & Accounting", 3, 3],
+  ["Packaging", "Manufacturing", 3, 3],
+  ["Printer - Large Format", "Advertising & Marketing", 3, 3],
+  ["Stationery Supplies", "Retail & Wholesale", 3, 3],
+  ["AI Consultant", "Advertising & Marketing", 2, 2],
+  ["Artist", "Art & Entertainment", 2, 2],
+  ["Auto/Car Rental/Leasing", "Automotives", 2, 2],
+  ["Auto/Car Sales", "Automotives", 2, 2],
+  ["Business Financing", "Finance & Insurance", 2, 2],
+  ["CCTV", "Security & Investigation", 2, 2],
+  ["Chemical Products", "Manufacturing", 2, 2],
+  ["Chocolatier", "Food & Beverage", 2, 2],
+  ["Clothing & Accessories", "Retail & Wholesale", 2, 2],
+  ["Computer Security Solutions", "Computer & Programming", 2, 2],
+  ["Computer Software", "Computer & Programming", 2, 2],
+  ["Construction Project Management", "Construction", 2, 2],
+  ["Custom Clothing/Tailor", "Retail & Wholesale", 2, 2],
+  ["Diamonds & Gemstones", "Retail & Wholesale", 2, 2],
+  ["E-Commerce Services", "Advertising & Marketing", 2, 2],
+  ["Education Services/Tutor", "Training & Coaching", 2, 2],
+  ["Educational Facility", "Training & Coaching", 2, 2],
+  ["Elevators", "Construction", 2, 2],
+  ["Event Rentals", "Event & Business Service", 2, 2],
+  ["Fire Protection", "Security & Investigation", 2, 2],
+  ["Flooring", "Construction", 2, 2],
+  ["Geopathic Services", "Architecture & Engineering", 2, 2],
+  ["Health & Wellness Products", "Health & Wellness", 2, 2],
+  ["Joinery", "Construction", 2, 2],
+  ["Landscape Maintenance & Supplies", "Architecture & Engineering", 2, 2],
+  ["Lead Generation", "Advertising & Marketing", 2, 2],
+  ["Life Coach", "Training & Coaching", 2, 2],
+  ["Moving Company", "Transport & Shipping", 2, 2],
+  ["Offshore Company Set up", "Legal & Accounting", 2, 2],
+  ["Perfume", "Retail & Wholesale", 2, 2],
+  ["Printing Products/Cartridges/Consumables", "Retail & Wholesale", 2, 2],
+  ["Property Management", "Real Estate Services", 2, 2],
+  ["Real Estate Development", "Real Estate Services", 2, 2],
+  ["Security Products & Systems", "Security & Investigation", 2, 2],
+  ["Steel Fabrication", "Manufacturing", 2, 2],
+  ["Wills/Trusts", "Legal & Accounting", 2, 2],
+  ["Apparel", "Manufacturing", 1, 1],
+  ["Auto/Car Body Shop", "Automotives", 1, 1],
+  ["Auto/Car Parts & Accessories", "Automotives", 1, 1],
+  ["Automotive Expert", "Automotives", 1, 1],
+  ["Banking Services", "Finance & Insurance", 1, 1],
+  ["Business Consultancy - Small Business", "Consulting", 1, 1],
+  ["Business Consultancy - Turnaround", "Consulting", 1, 1],
+  ["Candles", "Retail & Wholesale", 1, 1],
+  ["Chiropractor", "Health & Wellness", 1, 1],
+  ["Citizenship Consultancy", "Legal & Accounting", 1, 1],
+  ["Civil / Structural engineer", "Architecture & Engineering", 1, 1],
+  ["Cleaning Products", "Retail & Wholesale", 1, 1],
+  ["Cloud Services", "Computer & Programming", 1, 1],
+  ["Commercial Builder", "Construction", 1, 1],
+  ["Commercial Loans", "Finance & Insurance", 1, 1],
+  ["Consumer Law", "Legal & Accounting", 1, 1],
+  ["Copywriter & Writing Services", "Advertising & Marketing", 1, 1],
+  ["Corporate Law", "Legal & Accounting", 1, 1],
+  ["Cosmetics/Skin Care", "Personal Services", 1, 1],
+  ["Counter Tops", "Construction", 1, 1],
+  ["Credit Card/Merchant Services", "Finance & Insurance", 1, 1],
+  ["Doctor/Physician", "Health & Wellness", 1, 1],
+  ["Electronics Retailer", "Retail & Wholesale", 1, 1],
+  ["Embroidery", "Advertising & Marketing", 1, 1],
+  ["Environmental Services", "Construction", 1, 1],
+  ["Estate Planning Law", "Legal & Accounting", 1, 1],
+  ["Event Venue/Room Rental", "Event & Business Service", 1, 1],
+  ["Events (Live)", "Event & Business Service", 1, 1],
+  ["Flooring Retail", "Retail & Wholesale", 1, 1],
+  ["Food Products", "Manufacturing", 1, 1],
+  ["Foreign Exchange", "Finance & Insurance", 1, 1],
+  ["Glass", "Construction", 1, 1],
+  ["Health Facility/Gym/Club", "Health & Wellness", 1, 1],
+  ["Home Automation", "Construction", 1, 1],
+  ["Home Furnishings", "Retail & Wholesale", 1, 1],
+  ["Home Staging", "Real Estate Services", 1, 1],
+  ["IT Hardware Supplier", "Computer & Programming", 1, 1],
+  ["In-Home Care", "Health & Wellness", 1, 1],
+  ["Industrial Automation", "Architecture & Engineering", 1, 1],
+  ["Insurance Consultant", "Finance & Insurance", 1, 1],
+  ["Legal Service Plan", "Legal & Accounting", 1, 1],
+  ["Machinery & Equipment Manufacture", "Manufacturing", 1, 1],
+  ["Online Marketing", "Advertising & Marketing", 1, 1],
+  ["Organizations & Other Specialist", "Organizations & Others", 1, 1],
+  ["Painter - Residential", "Construction", 1, 1],
+  ["Paper & Paper Products", "Manufacturing", 1, 1],
+  ["Photography - Commercial/Industrial", "Advertising & Marketing", 1, 1],
+  ["Print Advertising", "Advertising & Marketing", 1, 1],
+  ["Printer - Digital", "Advertising & Marketing", 1, 1],
+  ["Real Estate Inspector", "Real Estate Services", 1, 1],
+  ["Relationship Marketing", "Advertising & Marketing", 1, 1],
+  ["Salon/Spa", "Personal Services", 1, 1],
+  ["Security Specialist", "Security & Investigation", 1, 1],
+  ["Solar Systems", "Construction", 1, 1],
+  ["Tiles", "Retail & Wholesale", 1, 1],
+  ["Tires & Lubes", "Automotives", 1, 1],
+  ["Translator/Language Services", "Event & Business Service", 1, 1],
+  ["Water Systems", "Retail & Wholesale", 1, 1],
+  ["Windows & Doors", "Construction", 1, 1]
+];
+
+// ═══════════════════════════════════════════
 // SHARED CLAUDE API HELPER — correct browser headers, JSON response parsing
 // ═══════════════════════════════════════════
 const callClaude = async (prompt, maxTokens = 1500) => {
@@ -904,7 +1040,8 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches,
                 <div style={{ width: 18, height: 18, borderRadius: "50%", background: c.fit === "high" ? "#8B1A1A" : "#6B7280", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
                 <div style={{ minWidth: 0 }}>
                   <span style={{ fontWeight: 800, fontSize: 12, color: "#111" }}>{c.category}</span>
-                  {c.fit === "high" && <span style={{ fontSize: 9, fontWeight: 800, color: "#B45309", marginLeft: 6 }}>★ HIGH SYNERGY</span>}
+                  {c.fit === "high" && <span style={{ fontSize: 9, fontWeight: 800, color: "#B45309", marginLeft: 6 }}>★ TOP DEMAND</span>}
+                  {c.chapters > 0 && <span style={{ fontSize: 9, fontWeight: 700, color: "#6D28D9", marginLeft: 6 }}>📊 {c.chapters} UAE ch.</span>}
                   {c.synergyWith && <div style={{ fontSize: 10, color: "#4338CA", marginTop: 1 }}>↔ {c.synergyWith}</div>}
                   {c.reason && <div style={{ fontSize: 10.5, color: "#6B7280", fontStyle: "italic", marginTop: 1 }}>{c.reason}</div>}
                 </div>
@@ -1109,46 +1246,73 @@ Respond with ONLY valid JSON, no markdown, no preamble:
   };
 
   // ═══════════════════════════════════════════
-  // OPEN CATEGORIES SCAN — top 10 categories open in the chapter, ranked by synergy.
+  // OPEN CATEGORIES SCAN — data-driven, from the UAE consolidated member list.
+  // Shortlists categories filled elsewhere in the UAE but open in Insomniacs,
+  // cross-checked against the LIVE member roster, ranked by nationwide demand.
+  // AI is only used to annotate referral synergy — if that call fails, the
+  // data-driven list still stands (the scan itself can never come back empty).
   // Run weekly via the button; result is saved in this browser (localStorage).
   // ═══════════════════════════════════════════
+  const normCat = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
   const runOpenCategoryScan = async () => {
     setCatsLoading(true);
     setCatsError("");
     try {
-      const currentLines = members.map(m => `- ${m.category} (${m.specialty})`).join("\n");
+      // 1. Cross-check the reference list against the live roster (category + specialty)
+      const taken = members.flatMap(m => [normCat(m.category), normCat(m.specialty)]).filter(Boolean);
+      const stillOpen = UAE_OPEN_CATEGORY_POOL.filter(([cat]) => {
+        const n = normCat(cat);
+        return !taken.some(t => t === n || (t.length >= 12 && n.length >= 12 && (t.includes(n) || n.includes(t))));
+      });
+      if (stillOpen.length === 0) throw new Error("Every category in the UAE reference list is now taken — the reference data needs a refresh.");
 
-      const prompt = `You are the membership-growth advisor for BNI Insomniacs, a BNI (Business Network International) chapter in Dubai, UAE.
+      // 2. Top 10 by demand (chapters filled in, then members nationwide) — already pre-sorted
+      const top = stillOpen.slice(0, 10).map(([category, group, chapters, memberCount], i) => ({
+        category, group, chapters, memberCount,
+        fit: i < 5 ? "high" : "good",
+        synergyWith: "",
+        reason: `Filled in ${chapters} other UAE chapter${chapters === 1 ? "" : "s"} (${memberCount} member${memberCount === 1 ? "" : "s"} nationwide)`,
+      }));
 
-CURRENT CHAPTER CATEGORIES — these are already TAKEN. Never suggest any of them or an obvious variant:
-${currentLines}
+      // 3. Optional AI pass — annotate each pick with referral synergy. Failure is non-fatal.
+      try {
+        const memberLines = members.map(m => `- ${m.category}${m.specialty ? ` (${m.specialty})` : ""}`).join("\n");
+        const pickLines = top.map(c => `- ${c.category} [group: ${c.group}]`).join("\n");
+        const prompt = `You are the membership-growth advisor for BNI Insomniacs, a BNI chapter in Dubai. The 10 categories below are confirmed OPEN in this chapter (they are filled in other UAE chapters). Do NOT add, remove, rename, or re-rank them — only annotate each one.
 
-TASK: Suggest exactly 10 business categories that are OPEN in this chapter, drawn from categories commonly filled in other BNI chapters across the UAE (Dubai, Abu Dhabi, Sharjah). Rank them BEST-FIT FIRST, judged by:
-1. Contact-sphere overlap and two-way referral synergy with the current member list — categories that would naturally give referrals to AND receive referrals from existing members.
-2. Mutual benefit inside and outside the chapter: shared client base, complementary services, and strong demand in the UAE market.
+CURRENT CHAPTER CATEGORIES:
+${memberLines}
 
-RULES:
-- Use standard BNI category naming (e.g. "Residential Real Estate", "Commercial Insurance", "IT Support & Managed Services").
-- Never repeat or overlap with a taken category.
-- "synergyWith": 2-3 EXISTING chapter categories it would trade referrals with, comma-separated, exactly as written in the list above.
-- "reason": under 15 words, specific to why it fits THIS chapter.
-- "fit": "high" for the strongest 4-5 picks, "good" for the rest.
+OPEN CATEGORIES TO ANNOTATE:
+${pickLines}
+
+For each open category provide:
+- "synergyWith": 2-3 CURRENT chapter categories it would trade referrals with, comma-separated, exactly as written in the current list.
+- "reason": under 14 words on why it fits THIS chapter's referral network.
 
 Respond with ONLY valid JSON, no markdown, no preamble:
-{"categories":[{"category":"...","synergyWith":"...","reason":"...","fit":"high"}]}`;
+{"categories":[{"category":"<exactly as given>","synergyWith":"...","reason":"..."}]}`;
+        const result = await callClaude(prompt, 2000);
+        const notes = {};
+        (result.categories || []).forEach(c => { if (c.category) notes[normCat(c.category)] = c; });
+        top.forEach(t => {
+          const n = notes[normCat(t.category)];
+          if (n) {
+            if (n.synergyWith) t.synergyWith = String(n.synergyWith);
+            if (n.reason) t.reason = String(n.reason);
+          }
+        });
+      } catch (aiErr) {
+        console.warn("Synergy annotation skipped (data-driven list kept):", aiErr);
+      }
 
-      const result = await callClaude(prompt, 2500);
-      const takenLower = members.map(m => (m.category || "").toLowerCase().trim());
-      const clean = (result.categories || [])
-        .filter(c => c.category && !takenLower.some(t => t && (t === c.category.toLowerCase().trim() || t.includes(c.category.toLowerCase().trim()) || c.category.toLowerCase().trim().includes(t))))
-        .slice(0, 10);
-      if (clean.length === 0) throw new Error("AI returned no usable categories — try again.");
-      const payload = { checkedAt: new Date().toISOString(), categories: clean };
+      const payload = { checkedAt: new Date().toISOString(), categories: top };
       setOpenCats(payload);
       try { localStorage.setItem(OPEN_CATS_KEY, JSON.stringify(payload)); } catch { /* storage full/blocked — session only */ }
     } catch (e) {
       console.error("Open category scan failed:", e);
-      setCatsError(e.message || "Scan failed — check the API key and model string.");
+      setCatsError(e.message || "Scan failed.");
     }
     setCatsLoading(false);
   };
@@ -1484,7 +1648,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         </div>
         {viewMode === "list" && (
           <>
-            <button onClick={() => setShowOpenCats(!showOpenCats)} title="AI-scan for the top 10 categories open in the chapter" style={{ background: showOpenCats ? "#7C3AED" : "#fff", color: showOpenCats ? "#fff" : "#7C3AED", border: "1px solid #7C3AED", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", position: "relative" }}>
+            <button onClick={() => setShowOpenCats(!showOpenCats)} title="Data scan: top 10 categories filled in other UAE chapters but open in ours" style={{ background: showOpenCats ? "#7C3AED" : "#fff", color: showOpenCats ? "#fff" : "#7C3AED", border: "1px solid #7C3AED", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", position: "relative" }}>
               🎯 Open Categories
               {daysSinceCatCheck !== null && daysSinceCatCheck >= 7 && <span style={{ position: "absolute", top: -4, right: -4, width: 10, height: 10, borderRadius: "50%", background: "#F59E0B", border: "2px solid #fff" }} />}
             </button>
@@ -1505,7 +1669,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
           <div>
             <div style={{ fontSize: 13, fontWeight: 800, color: "#6B21A8" }}>🎯 Open Categories in BNI Insomniacs</div>
             <div style={{ fontSize: 11, color: "#7E22CE", lineHeight: 1.6, marginTop: 2 }}>
-              The top 10 categories open in the chapter, drawn from categories commonly filled in other UAE BNI chapters and ranked by referral synergy with our current {members.length} members. Re-run weekly — results are saved in this browser and printed automatically on the visitor sheet.
+              The top 10 invite targets, taken from the consolidated UAE member list (37 chapters, 1,085 members): categories filled elsewhere in the UAE but open in Insomniacs, cross-checked live against our {members.length} members and ranked by nationwide demand. AI adds the referral-synergy notes. Re-run weekly — results are saved in this browser and printed automatically on the visitor sheet.
             </div>
           </div>
           <button onClick={() => setShowOpenCats(false)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#6B21A8", flexShrink: 0 }}>✕</button>
@@ -1524,7 +1688,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         {catsLoading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#6B21A8", fontSize: 12, marginTop: 8 }}>
             <div style={{ width: 14, height: 14, border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            Comparing {allCategoriesPresent.length} taken categories against common UAE BNI chapter categories…
+            Cross-checking {allCategoriesPresent.length} taken categories against {UAE_OPEN_CATEGORY_POOL.length} categories filled in other UAE chapters…
           </div>
         )}
         {catsError && <div style={{ color: "#991B1B", fontSize: 12, marginTop: 8 }}>⚠️ {catsError}</div>}
@@ -1536,7 +1700,8 @@ Respond with ONLY valid JSON, no markdown, no preamble:
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontWeight: 800, fontSize: 13, color: "#111" }}>{c.category}</span>
-                    {c.fit === "high" && <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 10 }}>★ HIGH SYNERGY</span>}
+                    {c.fit === "high" && <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 10 }}>★ TOP DEMAND</span>}
+                    {c.chapters > 0 && <span style={{ background: "#EDE9FE", color: "#5B21B6", fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 10 }}>📊 {c.chapters} UAE chapter{c.chapters === 1 ? "" : "s"} · {c.memberCount} member{c.memberCount === 1 ? "" : "s"}</span>}
                   </div>
                   {c.synergyWith && <div style={{ fontSize: 11, color: "#4338CA", marginTop: 2 }}>↔ Refers with: {c.synergyWith}</div>}
                   {c.reason && <div style={{ fontSize: 11, color: "#6B7280", fontStyle: "italic", marginTop: 1 }}>{c.reason}</div>}
@@ -2812,7 +2977,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.5</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.6</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
