@@ -1246,67 +1246,107 @@ Respond with ONLY valid JSON, no markdown, no preamble:
   };
 
   // ═══════════════════════════════════════════
-  // OPEN CATEGORIES SCAN — data-driven, from the UAE consolidated member list.
-  // Shortlists categories filled elsewhere in the UAE but open in Insomniacs,
-  // cross-checked against the LIVE member roster, ranked by nationwide demand.
-  // AI is only used to annotate referral synergy — if that call fails, the
-  // data-driven list still stands (the scan itself can never come back empty).
-  // Run weekly via the button; result is saved in this browser (localStorage).
+  // OPEN CATEGORIES SCAN (v6.7) — two-pass conflict-aware.
+  // Goal: suggest classifications NOBODY in Insomniacs holds, so an invited
+  // visitor has a clear path to membership (no classification conflict).
+  // Pass 1 (deterministic): stemmed word-overlap against every member's
+  //   SPECIALTY — catches "Business Consultancy" vs "Business Consulting",
+  //   "Interior Decorating" vs "Interior Design", "Fine Jewellery" vs
+  //   "Fine Jewelry", etc. Placeholder specialties like "<Group> Specialist"
+  //   carry no real words, so they are skipped here.
+  // Pass 2 (AI, non-fatal): a membership-committee-style review that removes
+  //   FUNCTIONAL conflicts pure text can't see — e.g. "Financial Investments"
+  //   vs a member doing "Wealth Management", "Gifts" vs "Promotional Products".
+  //   If the AI call fails, the Pass-1 list still stands (never empty).
+  // Ranked by nationwide demand. Run weekly; saved in localStorage.
   // ═══════════════════════════════════════════
   const normCat = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const CAT_STOPWORDS = new Set(["and", "of", "the", "for", "in", "etc", "specialist", "services", "service", "products", "product", "solutions", "solution", "company", "general", "commercial", "residential", "corporate", "business"]);
+  const stemCatWord = (w) => w.replace(/jewellery/, "jewelry").replace(/(ing|tion|ment|ancy|ency|ants|ant|ers|er|ies|s)$/, "");
+  const catTokens = (s) => normCat(s).split(" ").filter(w => w && !CAT_STOPWORDS.has(w)).map(stemCatWord).filter(Boolean);
 
   const runOpenCategoryScan = async () => {
     setCatsLoading(true);
     setCatsError("");
     try {
-      // 1. Cross-check the reference list against the live roster (category + specialty)
+      // ── PASS 0: exact / substring match against category + specialty (as before)
       const taken = members.flatMap(m => [normCat(m.category), normCat(m.specialty)]).filter(Boolean);
+      // ── PASS 1: stemmed word-overlap against real (non-placeholder) specialties
+      const specialtyTok = members
+        .filter(m => m.specialty && !/specialist\s*$/i.test(m.specialty.trim()))
+        .map(m => ({ name: m.name, spec: m.specialty, set: new Set(catTokens(m.specialty)) }));
+      const findConflict = (cat) => {
+        const ct = catTokens(cat);
+        if (!ct.length) return null;
+        for (const mt of specialtyTok) {
+          const hits = ct.filter(t => mt.set.has(t));
+          if (hits.length >= 2 || hits.length / ct.length >= 0.5) return `${mt.name} — ${mt.spec}`;
+        }
+        return null;
+      };
       const stillOpen = UAE_OPEN_CATEGORY_POOL.filter(([cat]) => {
         const n = normCat(cat);
-        return !taken.some(t => t === n || (t.length >= 12 && n.length >= 12 && (t.includes(n) || n.includes(t))));
+        if (taken.some(t => t === n || (t.length >= 12 && n.length >= 12 && (t.includes(n) || n.includes(t))))) return false;
+        return !findConflict(cat);
       });
       if (stillOpen.length === 0) throw new Error("Every category in the UAE reference list is now taken — the reference data needs a refresh.");
 
-      // 2. Top 10 by demand (chapters filled in, then members nationwide) — already pre-sorted
-      const top = stillOpen.slice(0, 10).map(([category, group, chapters, memberCount], i) => ({
+      // Candidate shortlist (top 25 by demand) → AI committee review picks the final 10
+      let candidates = stillOpen.slice(0, 25).map(([category, group, chapters, memberCount]) => ({
         category, group, chapters, memberCount,
-        fit: i < 5 ? "high" : "good",
         synergyWith: "",
         reason: `Filled in ${chapters} other UAE chapter${chapters === 1 ? "" : "s"} (${memberCount} member${memberCount === 1 ? "" : "s"} nationwide)`,
       }));
 
-      // 3. Optional AI pass — annotate each pick with referral synergy. Failure is non-fatal.
+      // ── PASS 2: AI membership-committee review + synergy annotation (one call, non-fatal)
       try {
-        const memberLines = members.map(m => `- ${m.category}${m.specialty ? ` (${m.specialty})` : ""}`).join("\n");
-        const pickLines = top.map(c => `- ${c.category} [group: ${c.group}]`).join("\n");
-        const prompt = `You are the membership-growth advisor for BNI Insomniacs, a BNI chapter in Dubai. The 10 categories below are confirmed OPEN in this chapter (they are filled in other UAE chapters). Do NOT add, remove, rename, or re-rank them — only annotate each one.
+        const memberLines = members.map(m => {
+          const placeholder = m.specialty && /specialist\s*$/i.test(m.specialty.trim());
+          return `- ${m.name}: ${m.category}${m.specialty ? ` — ${m.specialty}${placeholder ? " (exact specialty not recorded)" : ""}` : ""}`;
+        }).join("\n");
+        const candLines = candidates.map(c => `- ${c.category} [group: ${c.group}]`).join("\n");
+        const prompt = `You are the membership committee of BNI Insomniacs, a BNI chapter in Dubai. Your job: for each CANDIDATE category below, decide whether it is genuinely OPEN in this chapter, or whether it CONFLICTS with the classification of an existing member.
 
-CURRENT CHAPTER CATEGORIES:
+A CONFLICT means an existing member would reasonably claim that business as theirs — judge by FUNCTION, not wording. Examples of conflicts: "Financial Investments" conflicts with a member doing "Wealth Management"; "Gifts" conflicts with "Promotional Products"; "Interior Decorating" conflicts with "Interior Design". Members whose exact specialty is not recorded should NOT block a whole group — only flag a conflict when a member's known specialty genuinely overlaps.
+
+CURRENT MEMBERS:
 ${memberLines}
 
-OPEN CATEGORIES TO ANNOTATE:
-${pickLines}
+CANDIDATE CATEGORIES (do not add, rename, or re-rank — only judge each one):
+${candLines}
 
-For each open category provide:
-- "synergyWith": 2-3 CURRENT chapter categories it would trade referrals with, comma-separated, exactly as written in the current list.
-- "reason": under 14 words on why it fits THIS chapter's referral network.
+For each candidate return:
+- "category": exactly as given
+- "verdict": "open" or "conflict"
+- "conflictWith": if conflict, the member name and specialty; else ""
+- "synergyWith": if open, 2-3 CURRENT member specialties/categories it would trade referrals with, comma-separated
+- "reason": if open, under 14 words on why it fits THIS chapter's referral network; if conflict, under 10 words on the clash
 
 Respond with ONLY valid JSON, no markdown, no preamble:
-{"categories":[{"category":"<exactly as given>","synergyWith":"...","reason":"..."}]}`;
-        const result = await callClaude(prompt, 2000);
-        const notes = {};
-        (result.categories || []).forEach(c => { if (c.category) notes[normCat(c.category)] = c; });
-        top.forEach(t => {
-          const n = notes[normCat(t.category)];
-          if (n) {
-            if (n.synergyWith) t.synergyWith = String(n.synergyWith);
-            if (n.reason) t.reason = String(n.reason);
-          }
+{"categories":[{"category":"...","verdict":"open","conflictWith":"","synergyWith":"...","reason":"..."}]}`;
+        const result = await callClaude(prompt, 3500);
+        const verdicts = {};
+        (result.categories || []).forEach(c => { if (c.category) verdicts[normCat(c.category)] = c; });
+        const reviewed = candidates.filter(c => {
+          const v = verdicts[normCat(c.category)];
+          return !(v && v.verdict === "conflict");
         });
+        // Only trust the AI review if it didn't wipe out the list entirely
+        if (reviewed.length >= 5) {
+          candidates = reviewed;
+          candidates.forEach(c => {
+            const v = verdicts[normCat(c.category)];
+            if (v) {
+              if (v.synergyWith) c.synergyWith = String(v.synergyWith);
+              if (v.reason) c.reason = String(v.reason);
+            }
+          });
+        }
       } catch (aiErr) {
-        console.warn("Synergy annotation skipped (data-driven list kept):", aiErr);
+        console.warn("AI conflict review skipped (deterministic list kept):", aiErr);
       }
 
+      const top = candidates.slice(0, 10).map((c, i) => ({ ...c, fit: i < 5 ? "high" : "good" }));
       const payload = { checkedAt: new Date().toISOString(), categories: top };
       setOpenCats(payload);
       try { localStorage.setItem(OPEN_CATS_KEY, JSON.stringify(payload)); } catch { /* storage full/blocked — session only */ }
@@ -2977,7 +3017,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.6</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.7</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
