@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, Fragment } from "react";
 import { createClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
@@ -779,7 +779,7 @@ function PrintBox({ label }) {
   );
 }
 
-function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches }) {
+function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches, openCategories }) {
   const formatted = (() => {
     const d = new Date(meetingDate + "T00:00:00");
     return d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
@@ -811,68 +811,68 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches 
             <th style={{ ...TH, width: 24 }}>#</th>
             <th style={{ ...TH, width: 48 }}>Arr.</th>
             <th style={{ ...TH, width: 40 }}>Paid</th>
-            <th style={{ ...TH, width: "15%" }}>Visitor Name</th>
-            <th style={{ ...TH, width: "16%" }}>Business</th>
-            <th style={{ ...TH, width: "13%" }}>Category</th>
-            <th style={{ ...TH, width: "11%" }}>Invited By</th>
-            <th style={{ ...TH, width: "12%" }}>Phone</th>
-            <th style={{ ...TH }}>BNI Matches — Introduce To</th>
+            <th style={{ ...TH, width: "21%" }}>Visitor Name</th>
+            <th style={{ ...TH, width: "23%" }}>Business</th>
+            <th style={{ ...TH, width: "20%" }}>Category</th>
+            <th style={{ ...TH, width: "15%" }}>Invited By</th>
+            <th style={{ ...TH }}>Phone</th>
           </tr>
         </thead>
         <tbody>
           {visitors.map((v, i) => {
             const ai = aiMatches?.[String(v.id)] || [];
-            const topMatches = getTopMatches(v);
+            const topMatches = ai.length > 0 ? [] : getTopMatches(v);
+            const hasMatches = ai.length > 0 || topMatches.length > 0;
+            const rowBg = i % 2 === 0 ? "#fff" : "#F7F8FB";
             return (
-              <tr key={v.id} style={{ background: i % 2 === 0 ? "#fff" : "#F7F8FB", borderBottom: "1px solid #D1D5DB", verticalAlign: "top" }}>
-                <td style={{ padding: "9px 8px", color: "#9CA3AF", fontWeight: 700, fontSize: 12 }}>{i + 1}</td>
-                <td style={{ padding: "9px 8px" }}><PrintBox /></td>
-                <td style={{ padding: "9px 8px" }}><PrintBox /></td>
-                <td style={{ padding: "9px 8px", fontWeight: 800, color: "#111", fontSize: 13 }}>
-                  {v.name}
-                  <div style={{ fontSize: 10, color: "#6B7280", fontWeight: 400, marginTop: 2 }}>{STATUS_COLORS[v.status]?.label || v.status}</div>
-                </td>
-                <td style={{ padding: "9px 8px", color: "#374151", fontSize: 12 }}>{v.business}</td>
-                <td style={{ padding: "9px 8px" }}>
-                  <div style={{ fontWeight: 700, color: "#4338CA", fontSize: 11 }}>{v.category || "—"}</div>
-                  <div style={{ color: "#6B7280", fontSize: 10, marginTop: 1 }}>{v.specialty || ""}</div>
-                </td>
-                <td style={{ padding: "9px 8px", color: "#374151", fontSize: 12 }}>{v.invitedBy || "—"}</td>
-                <td style={{ padding: "9px 8px", color: "#374151", fontSize: 11 }}>{v.phone || "—"}</td>
-                <td style={{ padding: "9px 8px" }}>
-                  {ai.length > 0 ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {ai.map((m, mi) => {
-                        const mem = members.find(mm => mm.name.toLowerCase() === (m.memberName || "").toLowerCase());
-                        return (
-                          <div key={mi} style={{ display: "flex", alignItems: "flex-start", gap: 5 }}>
-                            <div style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, marginTop: 3, background: m.source === "ask" ? "#EF4444" : "#7C3AED" }} />
-                            <div>
-                              <span style={{ fontWeight: 800, fontSize: 11, color: "#111" }}>{m.memberName}</span>
-                              <span style={{ fontSize: 10, color: "#6B7280", marginLeft: 4 }}>{m.source === "ask" ? "★ Ask" : "🤖 Synergy"}</span>
-                              {mem && <div style={{ fontSize: 10, color: "#9CA3AF" }}>{mem.specialty}</div>}
-                              {m.reason && <div style={{ fontSize: 10, color: "#6B7280", fontStyle: "italic" }}>{m.reason}</div>}
+              <Fragment key={v.id}>
+                <tr style={{ background: rowBg, borderBottom: hasMatches ? "none" : "1px solid #D1D5DB", verticalAlign: "top" }}>
+                  <td style={{ padding: "9px 8px 6px", color: "#9CA3AF", fontWeight: 700, fontSize: 12 }}>{i + 1}</td>
+                  <td style={{ padding: "9px 8px 6px" }}><PrintBox /></td>
+                  <td style={{ padding: "9px 8px 6px" }}><PrintBox /></td>
+                  <td style={{ padding: "9px 8px 6px", fontWeight: 800, color: "#111", fontSize: 13 }}>
+                    {v.name}
+                    <div style={{ fontSize: 10, color: "#6B7280", fontWeight: 400, marginTop: 2 }}>{STATUS_COLORS[v.status]?.label || v.status}</div>
+                  </td>
+                  <td style={{ padding: "9px 8px 6px", color: "#374151", fontSize: 12 }}>{v.business}</td>
+                  <td style={{ padding: "9px 8px 6px" }}>
+                    <div style={{ fontWeight: 700, color: "#4338CA", fontSize: 12 }}>{v.category || "—"}</div>
+                    <div style={{ color: "#6B7280", fontSize: 10, marginTop: 1 }}>{v.specialty || ""}</div>
+                  </td>
+                  <td style={{ padding: "9px 8px 6px", color: "#374151", fontSize: 12 }}>{v.invitedBy || "—"}</td>
+                  <td style={{ padding: "9px 8px 6px", color: "#374151", fontSize: 12 }}>{v.phone || "—"}</td>
+                </tr>
+                {hasMatches && (
+                  <tr style={{ background: rowBg, borderBottom: "1px solid #D1D5DB" }}>
+                    <td colSpan={3} style={{ padding: "0 8px 8px" }}>
+                      <div style={{ fontSize: 9, fontWeight: 800, color: "#7C3AED", textTransform: "uppercase", letterSpacing: 0.5, textAlign: "right" }}>Introduce&nbsp;to&nbsp;→</div>
+                    </td>
+                    <td colSpan={5} style={{ padding: "0 8px 8px" }}>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {ai.length > 0 ? ai.map((m, mi) => {
+                          const mem = members.find(mm => mm.name.toLowerCase() === (m.memberName || "").toLowerCase());
+                          return (
+                            <div key={mi} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #DDD6FE", borderRadius: 6, padding: "3px 9px", background: "#fff" }}>
+                              <div style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: m.source === "ask" ? "#EF4444" : "#7C3AED" }} />
+                              <span style={{ fontWeight: 800, fontSize: 12, color: "#111", whiteSpace: "nowrap" }}>{m.memberName}</span>
+                              <span style={{ fontSize: 10, color: "#6B7280", whiteSpace: "nowrap" }}>{m.source === "ask" ? "★ Ask" : "🤖 Synergy"}</span>
+                              {mem && <span style={{ fontSize: 10, color: "#9CA3AF", whiteSpace: "nowrap" }}>({mem.specialty})</span>}
+                              {m.reason && <span style={{ fontSize: 10.5, color: "#4B5563", fontStyle: "italic" }}>— {m.reason}</span>}
                             </div>
+                          );
+                        }) : topMatches.map((m, mi) => (
+                          <div key={mi} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E5E7EB", borderRadius: 6, padding: "3px 9px", background: "#fff" }}>
+                            <div style={{ width: 8, height: 8, borderRadius: "50%", flexShrink: 0, background: m.score >= 90 ? "#EF4444" : m.score >= 70 ? "#F59E0B" : "#3B82F6" }} />
+                            <span style={{ fontWeight: 800, fontSize: 12, color: "#111", whiteSpace: "nowrap" }}>{m.member?.name}</span>
+                            <span style={{ fontSize: 10, color: "#6B7280", whiteSpace: "nowrap" }}>{m.type === "ask" ? "★ Ask" : "Contact Sphere"}</span>
+                            <span style={{ fontSize: 10, color: "#9CA3AF", whiteSpace: "nowrap" }}>({m.member?.specialty})</span>
                           </div>
-                        );
-                      })}
-                    </div>
-                  ) : topMatches.length === 0 ? <span style={{ color: "#9CA3AF", fontSize: 11 }}>—</span> : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {topMatches.map((m, mi) => (
-                        <div key={mi} style={{ display: "flex", alignItems: "flex-start", gap: 5 }}>
-                          <div style={{ width: 7, height: 7, borderRadius: "50%", flexShrink: 0, marginTop: 3, background: m.score >= 90 ? "#EF4444" : m.score >= 70 ? "#F59E0B" : "#3B82F6" }} />
-                          <div>
-                            <span style={{ fontWeight: 800, fontSize: 11, color: "#111" }}>{m.member?.name}</span>
-                            <span style={{ fontSize: 10, color: "#6B7280", marginLeft: 4 }}>{m.type === "ask" ? "★ Ask" : "Contact Sphere"}</span>
-                            <div style={{ fontSize: 10, color: "#9CA3AF" }}>{m.member?.specialty}</div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </td>
-              </tr>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             );
           })}
           {Array.from({ length: WALK_IN_ROWS }).map((_, i) => (
@@ -888,11 +888,31 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches 
               <td style={{ padding: "12px 8px", borderBottom: "1px dotted #FCD34D" }}>&nbsp;</td>
               <td style={{ padding: "12px 8px", borderBottom: "1px dotted #FCD34D" }}>&nbsp;</td>
               <td style={{ padding: "12px 8px", borderBottom: "1px dotted #FCD34D" }}>&nbsp;</td>
-              <td style={{ padding: "12px 8px", borderBottom: "1px dotted #FCD34D" }}>&nbsp;</td>
             </tr>
           ))}
         </tbody>
       </table>
+      {openCategories?.categories?.length > 0 && (
+        <div style={{ marginTop: 18, pageBreakInside: "avoid" }}>
+          <div style={{ background: "#8B1A1A", color: "#fff", padding: "8px 12px", fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, borderRadius: "4px 4px 0 0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>🎯 Open Categories — Top 10 Invite Targets</span>
+            {openCategories.checkedAt && <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.85, textTransform: "none", letterSpacing: 0 }}>Checked: {new Date(openCategories.checkedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}</span>}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", border: "1px solid #D1D5DB", borderTop: "none" }}>
+            {openCategories.categories.slice(0, 10).map((c, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, padding: "7px 10px", borderBottom: i < openCategories.categories.slice(0, 10).length - 2 ? "1px solid #E5E7EB" : "none", borderRight: i % 2 === 0 ? "1px solid #E5E7EB" : "none", background: c.fit === "high" ? "#FFFBEB" : "#fff" }}>
+                <div style={{ width: 18, height: 18, borderRadius: "50%", background: c.fit === "high" ? "#8B1A1A" : "#6B7280", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>{i + 1}</div>
+                <div style={{ minWidth: 0 }}>
+                  <span style={{ fontWeight: 800, fontSize: 12, color: "#111" }}>{c.category}</span>
+                  {c.fit === "high" && <span style={{ fontSize: 9, fontWeight: 800, color: "#B45309", marginLeft: 6 }}>★ HIGH SYNERGY</span>}
+                  {c.synergyWith && <div style={{ fontSize: 10, color: "#4338CA", marginTop: 1 }}>↔ {c.synergyWith}</div>}
+                  {c.reason && <div style={{ fontSize: 10.5, color: "#6B7280", fontStyle: "italic", marginTop: 1 }}>{c.reason}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ marginTop: 18, pageBreakInside: "avoid" }}>
         <div style={{ background: "#1B2A4A", color: "#fff", padding: "8px 12px", fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: 0.5, borderRadius: "4px 4px 0 0" }}>Member Substitutes</div>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
@@ -1003,6 +1023,23 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
   const [matchLoading, setMatchLoading] = useState(false);
   const [matchError, setMatchError] = useState("");
 
+  // ── Open Categories: { checkedAt, categories: [{ category, synergyWith, reason, fit }] } ──
+  const OPEN_CATS_KEY = "bni-open-categories";
+  const [openCats, setOpenCats] = useState(null);
+  const [showOpenCats, setShowOpenCats] = useState(false);
+  const [catsLoading, setCatsLoading] = useState(false);
+  const [catsError, setCatsError] = useState("");
+
+  // Restore last weekly scan from this browser (survives page refreshes, unlike AI matches)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(OPEN_CATS_KEY);
+      if (raw) setOpenCats(JSON.parse(raw));
+    } catch { /* corrupt storage — ignore, user can re-run */ }
+  }, []);
+
+  const daysSinceCatCheck = openCats?.checkedAt ? Math.floor((Date.now() - new Date(openCats.checkedAt).getTime()) / 86400000) : null;
+
   const allCategoriesPresent = [...new Set(members.map(m => m.category))].sort();
 
   useEffect(() => {
@@ -1069,6 +1106,51 @@ Respond with ONLY valid JSON, no markdown, no preamble:
       setMatchError(e.message || "AI match failed — check the API key and model string.");
     }
     setMatchLoading(false);
+  };
+
+  // ═══════════════════════════════════════════
+  // OPEN CATEGORIES SCAN — top 10 categories open in the chapter, ranked by synergy.
+  // Run weekly via the button; result is saved in this browser (localStorage).
+  // ═══════════════════════════════════════════
+  const runOpenCategoryScan = async () => {
+    setCatsLoading(true);
+    setCatsError("");
+    try {
+      const currentLines = members.map(m => `- ${m.category} (${m.specialty})`).join("\n");
+
+      const prompt = `You are the membership-growth advisor for BNI Insomniacs, a BNI (Business Network International) chapter in Dubai, UAE.
+
+CURRENT CHAPTER CATEGORIES — these are already TAKEN. Never suggest any of them or an obvious variant:
+${currentLines}
+
+TASK: Suggest exactly 10 business categories that are OPEN in this chapter, drawn from categories commonly filled in other BNI chapters across the UAE (Dubai, Abu Dhabi, Sharjah). Rank them BEST-FIT FIRST, judged by:
+1. Contact-sphere overlap and two-way referral synergy with the current member list — categories that would naturally give referrals to AND receive referrals from existing members.
+2. Mutual benefit inside and outside the chapter: shared client base, complementary services, and strong demand in the UAE market.
+
+RULES:
+- Use standard BNI category naming (e.g. "Residential Real Estate", "Commercial Insurance", "IT Support & Managed Services").
+- Never repeat or overlap with a taken category.
+- "synergyWith": 2-3 EXISTING chapter categories it would trade referrals with, comma-separated, exactly as written in the list above.
+- "reason": under 15 words, specific to why it fits THIS chapter.
+- "fit": "high" for the strongest 4-5 picks, "good" for the rest.
+
+Respond with ONLY valid JSON, no markdown, no preamble:
+{"categories":[{"category":"...","synergyWith":"...","reason":"...","fit":"high"}]}`;
+
+      const result = await callClaude(prompt, 2500);
+      const takenLower = members.map(m => (m.category || "").toLowerCase().trim());
+      const clean = (result.categories || [])
+        .filter(c => c.category && !takenLower.some(t => t && (t === c.category.toLowerCase().trim() || t.includes(c.category.toLowerCase().trim()) || c.category.toLowerCase().trim().includes(t))))
+        .slice(0, 10);
+      if (clean.length === 0) throw new Error("AI returned no usable categories — try again.");
+      const payload = { checkedAt: new Date().toISOString(), categories: clean };
+      setOpenCats(payload);
+      try { localStorage.setItem(OPEN_CATS_KEY, JSON.stringify(payload)); } catch { /* storage full/blocked — session only */ }
+    } catch (e) {
+      console.error("Open category scan failed:", e);
+      setCatsError(e.message || "Scan failed — check the API key and model string.");
+    }
+    setCatsLoading(false);
   };
 
   const addVisitor = async () => {
@@ -1402,6 +1484,10 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         </div>
         {viewMode === "list" && (
           <>
+            <button onClick={() => setShowOpenCats(!showOpenCats)} title="AI-scan for the top 10 categories open in the chapter" style={{ background: showOpenCats ? "#7C3AED" : "#fff", color: showOpenCats ? "#fff" : "#7C3AED", border: "1px solid #7C3AED", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", position: "relative" }}>
+              🎯 Open Categories
+              {daysSinceCatCheck !== null && daysSinceCatCheck >= 7 && <span style={{ position: "absolute", top: -4, right: -4, width: 10, height: 10, borderRadius: "50%", background: "#F59E0B", border: "2px solid #fff" }} />}
+            </button>
             <button onClick={downloadTemplate} title="Download a blank Excel template" style={{ background: "#fff", color: "#1B2A4A", border: "1px solid #D1D5DB", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬇️ Template</button>
             <button onClick={() => { setShowPaste(!showPaste); setPastePreview(null); }} title="Paste the visitor list copied from BNI Connect" style={{ background: showPaste ? "#1B2A4A" : "#fff", color: showPaste ? "#fff" : "#1B2A4A", border: "1px solid #1B2A4A", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>📋 Paste List</button>
             <button onClick={() => fileInputRef.current?.click()} title="Import visitors from a filled template" style={{ background: "#1B2A4A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬆️ Import Excel</button>
@@ -1412,6 +1498,58 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         )}
       </div>
     </div>
+
+    {viewMode === "list" && showOpenCats && (
+      <Card style={{ marginBottom: 12, background: "#FAF5FF", borderColor: "#A855F7" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#6B21A8" }}>🎯 Open Categories in BNI Insomniacs</div>
+            <div style={{ fontSize: 11, color: "#7E22CE", lineHeight: 1.6, marginTop: 2 }}>
+              The top 10 categories open in the chapter, drawn from categories commonly filled in other UAE BNI chapters and ranked by referral synergy with our current {members.length} members. Re-run weekly — results are saved in this browser and printed automatically on the visitor sheet.
+            </div>
+          </div>
+          <button onClick={() => setShowOpenCats(false)} style={{ background: "none", border: "none", fontSize: 14, cursor: "pointer", color: "#6B21A8", flexShrink: 0 }}>✕</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: openCats ? 10 : 0 }}>
+          <button onClick={runOpenCategoryScan} disabled={catsLoading || members.length === 0}
+            style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 12, fontWeight: 700, cursor: catsLoading ? "wait" : "pointer", opacity: (catsLoading || members.length === 0) ? 0.6 : 1 }}>
+            {catsLoading ? "🤖 Scanning…" : openCats ? "↺ Re-check Open Categories" : "🔍 Check Open Categories"}
+          </button>
+          {openCats?.checkedAt && !catsLoading && (
+            <span style={{ fontSize: 11, fontWeight: 600, color: daysSinceCatCheck >= 7 ? "#B45309" : "#166534" }}>
+              {daysSinceCatCheck >= 7 ? `⏰ Last checked ${daysSinceCatCheck} days ago — time for the weekly refresh` : `✅ Last checked: ${new Date(openCats.checkedAt).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}${daysSinceCatCheck === 0 ? " (today)" : daysSinceCatCheck === 1 ? " (yesterday)" : ` (${daysSinceCatCheck} days ago)`}`}
+            </span>
+          )}
+        </div>
+        {catsLoading && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#6B21A8", fontSize: 12, marginTop: 8 }}>
+            <div style={{ width: 14, height: 14, border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            Comparing {allCategoriesPresent.length} taken categories against common UAE BNI chapter categories…
+          </div>
+        )}
+        {catsError && <div style={{ color: "#991B1B", fontSize: 12, marginTop: 8 }}>⚠️ {catsError}</div>}
+        {openCats?.categories?.length > 0 && !catsLoading && (
+          <div style={{ border: "1px solid #E9D5FF", borderRadius: 8, background: "#fff", overflow: "hidden" }}>
+            {openCats.categories.slice(0, 10).map((c, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, padding: "9px 12px", borderBottom: i < openCats.categories.slice(0, 10).length - 1 ? "1px solid #F3F4F6" : "none", background: c.fit === "high" ? "#FFFBEB" : "#fff" }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", background: c.fit === "high" ? "#8B1A1A" : "#9CA3AF", color: "#fff", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontWeight: 800, fontSize: 13, color: "#111" }}>{c.category}</span>
+                    {c.fit === "high" && <span style={{ background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 800, padding: "2px 7px", borderRadius: 10 }}>★ HIGH SYNERGY</span>}
+                  </div>
+                  {c.synergyWith && <div style={{ fontSize: 11, color: "#4338CA", marginTop: 2 }}>↔ Refers with: {c.synergyWith}</div>}
+                  {c.reason && <div style={{ fontSize: 11, color: "#6B7280", fontStyle: "italic", marginTop: 1 }}>{c.reason}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {openCats?.categories?.length > 0 && !catsLoading && (
+          <div style={{ fontSize: 10.5, color: "#7E22CE", marginTop: 8 }}>🖨️ This list also appears on the print view under the visitor table, ready to share with members.</div>
+        )}
+      </Card>
+    )}
 
     {viewMode === "list" && showPaste && (
       <Card style={{ marginBottom: 12, background: "#FEFCE8", borderColor: "#F59E0B" }}>
@@ -1730,7 +1868,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
       <div style={{ border: "2px solid #E5E7EB", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
         <div style={{ background: "#374151", color: "#9CA3AF", fontSize: 10, padding: "5px 14px", fontWeight: 600, letterSpacing: 1, textTransform: "uppercase" }}>Preview — A4 Landscape</div>
         <div id="bni-print-area">
-          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} />
+          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} openCategories={openCats} />
         </div>
       </div>
     </>}
@@ -1749,7 +1887,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
           <button onClick={() => setShowPrintModal(false)} style={{ background: "#8B1A1A", color: "#fff", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>✕ Close</button>
         </div>
         <div id="bni-modal-print-area">
-          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} />
+          <PrintableVisitorList visitors={printVisitors} meetingDate={printDate} asks={asks} members={members} aiMatches={printMatches} openCategories={openCats} />
         </div>
         <style>{`
           @media print {
@@ -2674,7 +2812,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.4</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.5</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
