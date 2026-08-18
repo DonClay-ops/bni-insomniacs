@@ -355,39 +355,124 @@ const INITIAL_VISITORS = [
 ];
 
 // ═══════════════════════════════════════════
-// AI MATCHING ENGINE
+// CLASSIFICATION GUARD (v6.8) — the competitor test
+// ───────────────────────────────────────────
+// A visitor who does the SAME work as a member is a competitor and a BNI
+// classification conflict — never an "introduce to". The old engine matched on
+// category alone, which produced exactly the wrong result: a freight-forwarding
+// visitor was offered to the chapter's freight forwarder as a "match".
+//
+// Two levels are computed deterministically (no AI, always runs):
+//   "conflict" — the visitor's trade genuinely overlaps a member's classification
+//                → blocked from every match list, printed as a warning instead.
+//   "watch"    — same BNI category but a different trade, or the member's exact
+//                specialty isn't recorded → allowed, but flagged for the host.
+// ═══════════════════════════════════════════
+const OVERLAP_STOPWORDS = new Set([
+  "and", "of", "the", "for", "in", "etc", "specialist", "specialists", "services", "service",
+  "products", "product", "solutions", "solution", "company", "co", "llc", "fz", "fze", "fzc",
+  "group", "international", "global", "uae", "dubai", "est", "general", "commercial",
+  "residential", "corporate", "business", "provider", "providers", "supplier", "suppliers",
+]);
+const normTxt = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const stemTok = (w) => w.replace(/jewellery/, "jewelry").replace(/(ing|tion|ment|ancy|ency|ants|ant|ers|er|ies|s)$/, "");
+const tokSet = (s) => new Set(
+  normTxt(s).split(" ")
+    .filter(w => w.length > 1 && !OVERLAP_STOPWORDS.has(w))
+    .map(stemTok)
+    .filter(w => w.length > 1)
+);
+const isPlaceholderSpecialty = (s) => !s || /specialists?\s*$/i.test(String(s).trim());
+// Two shared trade words is a real overlap ("Fine Jewellery" vs "Fine Jewelry").
+// One shared word only counts when both classifications are short enough that the
+// word IS the trade ("Consulting Specialist" vs "Management Consulting") — that
+// stops "IT Consultants / Communication" from being read as a management consultant.
+const isTradeOverlap = (a, b) => {
+  if (!a.size || !b.size) return false;
+  let hits = 0;
+  a.forEach(t => { if (b.has(t)) hits++; });
+  return hits >= 2 || (hits >= 1 && a.size <= 2 && b.size <= 2);
+};
+
+// null | { level: "conflict" | "watch", member, why }
+function classificationClash(visitor, member) {
+  if (!visitor || !member) return null;
+  const mSpec = tokSet(member.specialty);
+  const sameCat = !!visitor.category && !!member.category && normTxt(visitor.category) === normTxt(member.category);
+  if (!isPlaceholderSpecialty(member.specialty)) {
+    const bySpecialty = isTradeOverlap(tokSet(visitor.specialty), mSpec);
+    const byBusiness = isTradeOverlap(tokSet(`${visitor.specialty || ""} ${visitor.business || ""}`), mSpec);
+    if (bySpecialty || byBusiness) {
+      return { level: "conflict", member, why: `same trade as ${member.name} — ${member.specialty}` };
+    }
+  }
+  if (sameCat) {
+    return {
+      level: "watch", member,
+      why: isPlaceholderSpecialty(member.specialty)
+        ? `${member.name} holds an unrecorded ${member.category} classification — confirm no overlap`
+        : `same BNI category as ${member.name} (${member.specialty})`,
+    };
+  }
+  return null;
+}
+const findClashes = (visitor, members) =>
+  members.map(m => classificationClash(visitor, m)).filter(Boolean)
+    .sort((a, b) => (a.level === "conflict" ? 0 : 1) - (b.level === "conflict" ? 0 : 1));
+const conflictIdSet = (visitor, members) =>
+  new Set(findClashes(visitor, members).filter(c => c.level === "conflict").map(c => c.member.id));
+
+// ═══════════════════════════════════════════
+// DETERMINISTIC MATCHING ENGINE (v6.8)
+// Now competitor-aware, inviter-aware, and no longer fooled by targetCategory.
+// (targetCategory is often tagged with the ASKING MEMBER'S OWN category, which
+// used to make every same-category visitor look like a 70% "match" — i.e. the
+// member's competitors.)
 // ═══════════════════════════════════════════
 function findMatches(visitor, asks, members) {
   const matches = [];
-  const vCat = (visitor.category || "").toLowerCase();
+  const vCat = normTxt(visitor.category);
   const vSpec = (visitor.specialty || "").toLowerCase();
   const vBiz = (visitor.business || "").toLowerCase();
   const vName = (visitor.name || "").toLowerCase();
+  const blocked = conflictIdSet(visitor, members);
+  const inviter = (visitor.invitedBy || "").trim().toLowerCase();
+  const isBlocked = (m) => !m || blocked.has(m.id) || (inviter && m.name.toLowerCase() === inviter);
 
   asks.filter(a => a.status === "open").forEach(ask => {
+    const member = members.find(m => m.id === ask.memberId) ||
+                   members.find(m => m.name.toLowerCase() === (ask.memberName || "").toLowerCase());
+    if (isBlocked(member)) return; // competitor of the asking member, or their own inviter
+
     let score = 0;
     let reason = "";
-    const aCat = (ask.targetCategory || "").toLowerCase();
+    const aCat = normTxt(ask.targetCategory);
     const aRole = (ask.targetRole || "").toLowerCase();
     const aCompany = (ask.targetCompany || "").toLowerCase();
     const aName = (ask.targetName || "").toLowerCase();
+    // If the ask is tagged with the member's own category it is a filing label,
+    // not a description of who they want to meet — ignore it for matching.
+    const targetIsOwnCategory = aCat && aCat === normTxt(member.category);
 
     if (ask.askType === "specific_person" && aName && vName.includes(aName.split(" ")[0].toLowerCase())) {
       score = 100; reason = `Exact person match: ${ask.memberName} is looking for ${ask.targetName}`;
-    } else if (ask.askType === "specific_company" && aCompany && vBiz.toLowerCase().includes(aCompany.toLowerCase())) {
+    } else if (ask.askType === "specific_company" && aCompany && vBiz.includes(aCompany)) {
       score = 95; reason = `Company match: ${ask.memberName} is looking for someone from ${ask.targetCompany}`;
-    } else if (aCat && vCat === aCat) {
+    } else if (aRole && (vSpec.includes(aRole.split(" ")[0]) || vBiz.includes(aRole.split(" ")[0]))) {
+      score = 85; reason = `Strong match: ${ask.memberName} is looking for "${ask.targetRole}" — visitor's business aligns`;
+    } else if (aCat && vCat === aCat && !targetIsOwnCategory) {
       score = 70; reason = `Category match: ${ask.memberName} is looking for ${ask.targetRole || ask.targetCategory}`;
-      if (aRole && (vSpec.includes(aRole.split(" ")[0].toLowerCase()) || vBiz.includes(aRole.split(" ")[0].toLowerCase()))) {
-        score = 85; reason = `Strong match: ${ask.memberName} is looking for "${ask.targetRole}" — visitor's business aligns`;
-      }
     }
-    if (score > 0) matches.push({ type: "ask", score, reason, member: members.find(m => m.id === ask.memberId), ask });
+    if (score > 0) matches.push({ type: "ask", score, reason, member, ask });
   });
 
-  members.filter(m => m.category.toLowerCase() === vCat).forEach(m => {
+  // Same-category members are NOT automatic introductions — in BNI a shared
+  // category is where competition lives, not where referrals come from. They are
+  // kept as a soft suggestion (45) so they show in the AI Match tab for review but
+  // stay below the printing threshold of 50.
+  members.filter(m => normTxt(m.category) === vCat && vCat && !isBlocked(m)).forEach(m => {
     if (!matches.find(mt => mt.member?.id === m.id)) {
-      matches.push({ type: "contact_sphere", score: 50, reason: `Contact Sphere: ${m.name} (${m.specialty}) is in the same category`, member: m });
+      matches.push({ type: "contact_sphere", score: 45, reason: `Same category as ${m.name} (${m.specialty}) — possible contact-sphere partner, verify they don't overlap before introducing`, member: m });
     }
   });
 
@@ -433,7 +518,7 @@ function ConfirmModal({ open, title, message, confirmLabel = "Delete", cancelLab
 }
 
 // ═══════════════════════════════════════════
-// AI VISITOR INTELLIGENCE COMPONENT  (briefing card — unchanged from v1)
+// AI VISITOR INTELLIGENCE COMPONENT  (briefing card)
 // ═══════════════════════════════════════════
 function VisitorIntelligence({ visitor, onBioSaved }) {
   const [loading, setLoading] = useState(false);
@@ -543,8 +628,10 @@ Write a briefing in this exact JSON structure (no markdown, pure JSON):
 }
 
 // ═══════════════════════════════════════════
-// NEW: AI VISITOR VALIDATION COMPONENT
-// Checks suitability — category conflicts with current members, red flags, fit score
+// AI VISITOR VALIDATION COMPONENT
+// Checks suitability — category conflicts with current members, red flags, fit score.
+// v6.8: the deterministic classification scan is now fed into the prompt, so the
+// committee review can't miss an overlap the app has already computed.
 // ═══════════════════════════════════════════
 function VisitorValidation({ visitor, members, onValidationSaved }) {
   const [loading, setLoading] = useState(false);
@@ -561,6 +648,10 @@ function VisitorValidation({ visitor, members, onValidationSaved }) {
         .map(m => `${m.name} — ${m.specialty}`);
 
       const allCategoriesInChapter = [...new Set(members.map(m => m.category))].sort();
+      const clashes = findClashes(visitor, members);
+      const clashLines = clashes.length
+        ? clashes.map(c => `- [${c.level === "conflict" ? "DIRECT CONFLICT" : "WATCH"}] ${c.member.name} — ${c.member.specialty} (${c.member.category}) :: ${c.why}`).join("\n")
+        : "(no overlap detected by the app)";
 
       const prompt = `You are the BNI Insomniacs Dubai Membership Committee assistant. Your job is to validate whether a prospective visitor is a SUITABLE FIT for the chapter, based on BNI's "one person per professional classification" rule and general chapter health.
 
@@ -573,6 +664,9 @@ VISITOR DETAILS:
 - Phone: ${visitor.phone || "not provided"}
 - Email: ${visitor.email || "not provided"}
 - Notes from intake call: ${visitor.callNotes || "none"}
+
+APP'S DETERMINISTIC CLASSIFICATION SCAN (computed from the live roster — trust a DIRECT CONFLICT unless it is obviously a word coincidence):
+${clashLines}
 
 CURRENT CHAPTER MEMBERS IN VISITOR'S CATEGORY (potential conflicts):
 ${sameCategoryMembers.length > 0 ? sameCategoryMembers.join("\n") : "(none — category is OPEN in the chapter)"}
@@ -597,7 +691,7 @@ Evaluate the visitor and return ONLY valid JSON in this exact structure (no mark
   "nextSteps": ["specific action 1 for the Visitor Host or Membership Committee", "specific action 2"]
 }
 
-Be honest and specific. If information is missing (no category, no business name, no inviter), flag it. If there is a clear classification conflict with an existing member, the verdict must be RED or AMBER — never GREEN.`;
+Be honest and specific. If information is missing (no category, no business name, no inviter), flag it. If there is a clear classification conflict with an existing member, the verdict must be RED or AMBER — never GREEN. A visitor who competes with a seated member can still be a valuable guest, but say plainly that they cannot take that classification and that the member concerned should be told before the meeting.`;
 
       const parsed = await callClaude(prompt, 1200);
       setResult(parsed);
@@ -724,7 +818,9 @@ Be honest and specific. If information is missing (no category, no business name
 }
 
 // ═══════════════════════════════════════════
-// SEAT PLANNER COMPONENT  (unchanged from v1, takes members as prop now)
+// SEAT PLANNER COMPONENT
+// v6.8: auto-assign now actively avoids seating a visitor next to a member they
+// compete with — a competitor next to you is the worst seat in the room.
 // ═══════════════════════════════════════════
 function SeatPlanner({ visitors, asks, members }) {
   const meetingVisitors = visitors.filter(v => v.date === MEETING_DATE);
@@ -754,14 +850,16 @@ function SeatPlanner({ visitors, asks, members }) {
       let bestScore = -1;
       meetingVisitors.forEach(v => {
         if (assigned.has(v.id)) return;
+        const clash = classificationClash(v, adjacentMember);
+        if (clash?.level === "conflict") return; // never seat a visitor beside their competitor
         const matches = findMatches(v, asks, members);
         const memberMatch = matches.find(m => m.member?.id === adjacentMember.id);
-        const catMatch = v.category === adjacentMember.category ? 60 : 0;
-        const score = (memberMatch?.score || 0) + catMatch;
+        const catMatch = v.category === adjacentMember.category ? 40 : 0;
+        const score = (memberMatch?.score || 0) + catMatch - (clash ? 15 : 0);
         if (score > bestScore) { bestScore = score; bestVisitor = v; }
       });
       if (!bestVisitor && meetingVisitors.length > 0) {
-        bestVisitor = meetingVisitors.find(v => !assigned.has(v.id)) || null;
+        bestVisitor = meetingVisitors.find(v => !assigned.has(v.id) && classificationClash(v, adjacentMember)?.level !== "conflict") || null;
       }
       if (bestVisitor) {
         newSeats[seatKey] = bestVisitor.id;
@@ -852,7 +950,7 @@ function SeatPlanner({ visitors, asks, members }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontWeight: 800, fontSize: 15, color: "#111" }}>🪑 Strategic Seat Planner</div>
-          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>Drag visitors to swap seats. Inner U = visitor row (6 seats). Outer = member seats (10).</div>
+          <div style={{ fontSize: 11, color: "#6B7280", marginTop: 2 }}>Drag visitors to swap seats. Inner U = visitor row (6 seats). Outer = member seats (10). Auto-assign never seats a visitor beside a competitor.</div>
         </div>
         <button onClick={autoAssign} style={{ background: "linear-gradient(135deg, #1B2A4A, #8B1A1A)", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>⚡ Auto-Assign by Affinity</button>
       </div>
@@ -904,7 +1002,10 @@ function SeatPlanner({ visitors, asks, members }) {
 }
 
 // ═══════════════════════════════════════════
-// PRINTABLE LIST  (uses members from state now)
+// PRINTABLE LIST
+// v6.8: prints a "classification clash" warning line for any visitor who
+// competes with a seated member, and no longer silently falls back to
+// deterministic matches once the AI has deliberately returned none.
 // ═══════════════════════════════════════════
 function PrintBox({ label }) {
   return (
@@ -956,9 +1057,11 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches,
         </thead>
         <tbody>
           {visitors.map((v, i) => {
-            const ai = aiMatches?.[String(v.id)] || [];
-            const topMatches = ai.length > 0 ? [] : getTopMatches(v);
-            const hasMatches = ai.length > 0 || topMatches.length > 0;
+            const aiRan = !!aiMatches && Object.prototype.hasOwnProperty.call(aiMatches, String(v.id));
+            const ai = aiRan ? (aiMatches[String(v.id)] || []) : [];
+            const topMatches = aiRan ? [] : getTopMatches(v);
+            const conflicts = findClashes(v, members).filter(c => c.level === "conflict");
+            const hasMatches = ai.length > 0 || topMatches.length > 0 || conflicts.length > 0 || aiRan;
             const rowBg = i % 2 === 0 ? "#fff" : "#F7F8FB";
             return (
               <Fragment key={v.id}>
@@ -1004,7 +1107,18 @@ function PrintableVisitorList({ visitors, meetingDate, asks, members, aiMatches,
                             <span style={{ fontSize: 10, color: "#9CA3AF", whiteSpace: "nowrap" }}>({m.member?.specialty})</span>
                           </div>
                         ))}
+                        {aiRan && ai.length === 0 && (
+                          <span style={{ fontSize: 10.5, color: "#6B7280", fontStyle: "italic" }}>No strong referral match — introduce during open networking.</span>
+                        )}
                       </div>
+                      {conflicts.length > 0 && (
+                        <div style={{ marginTop: 5, display: "inline-flex", alignItems: "flex-start", gap: 5, border: "1px solid #FCD34D", background: "#FFFBEB", borderRadius: 6, padding: "3px 9px" }}>
+                          <span style={{ fontSize: 10, flexShrink: 0 }}>⚠️</span>
+                          <span style={{ fontSize: 10.5, color: "#92400E", lineHeight: 1.4 }}>
+                            <strong>Classification clash:</strong> same trade as {conflicts.map(c => `${c.member.name} (${c.member.specialty})`).join(", ")} — competitor, not a referral. Brief {conflicts[0].member.name.split(" ")[0]} before the meeting.
+                          </span>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 )}
@@ -1155,10 +1269,11 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [activePanel, setActivePanel] = useState({});  // { [visitorId]: 'brief' | 'validate' }
 
-  // ── Print View AI-Match: { [visitorId]: [{ memberName, reason, source }] } ──
+  // ── Print View AI-Match: { [visitorId]: [{ memberName, reason, source, direction, confidence }] } ──
   const [printMatches, setPrintMatches] = useState({});
   const [matchLoading, setMatchLoading] = useState(false);
   const [matchError, setMatchError] = useState("");
+  const [matchStats, setMatchStats] = useState(null); // { kept, blocked, empty }
 
   // ── Open Categories: { checkedAt, categories: [{ category, synergyWith, reason, fit }] } ──
   const OPEN_CATS_KEY = "bni-open-categories";
@@ -1192,52 +1307,124 @@ function VisitorsTab({ visitors, setVisitors, asks, members, archived, setArchiv
   const printVisitors = visitors.filter(v => v.date === printDate);
 
   // ═══════════════════════════════════════════
-  // PRINT VIEW AI-MATCH — fills "BNI Matches — Introduce To" using asks + full member list
+  // PRINT VIEW AI-MATCH (v6.8) — competitor-aware, direction-aware
+  // ───────────────────────────────────────────
+  // Three layers now stand between the model and the printed sheet:
+  //   1. PRE-FILTER  — every visitor is scanned against the roster first, and any
+  //      member in the same trade (plus the inviter) is sent to the model as an
+  //      explicit DO-NOT-MATCH list, with the reason.
+  //   2. PROMPT      — the competitor test and the direction test are now hard
+  //      rules. An ask describes the CLIENT a member wants, never a rival
+  //      supplier of the member's own service, and every match must name who
+  //      would buy from or refer to whom.
+  //   3. POST-FILTER — anything that still comes back naming a competitor, the
+  //      inviter, an unknown member, a duplicate, or scoring under 55 confidence
+  //      is dropped before it reaches the page. Zero matches is a valid answer.
   // ═══════════════════════════════════════════
   const runPrintAIMatch = async () => {
     if (printVisitors.length === 0) return;
     setMatchLoading(true);
     setMatchError("");
+    setMatchStats(null);
     try {
       const openAsks = asks.filter(a => a.status === "open");
-      const visitorLines = printVisitors.map(v =>
-        `- id:${v.id} | ${v.name} | Business: ${v.business || "?"} | Category: ${v.category || "?"} | Specialty: ${v.specialty || "?"}`
-      ).join("\n");
-      const askLines = openAsks.length === 0 ? "(none)" : openAsks.map(a =>
-        `- ${a.memberName} is looking for: ${[a.targetName, a.targetCompany, a.targetRole, a.targetCategory].filter(Boolean).join(" / ") || "?"}${a.notes ? ` — "${a.notes}"` : ""}`
-      ).join("\n");
+
+      const visitorLines = printVisitors.map(v => {
+        const clashes = findClashes(v, members);
+        const conflicts = clashes.filter(c => c.level === "conflict");
+        const watches = clashes.filter(c => c.level === "watch");
+        const banned = [
+          ...conflicts.map(c => `${c.member.name} (${c.member.specialty}) — SAME TRADE, competitor`),
+          ...(v.invitedBy ? [`${v.invitedBy} — already invited this visitor`] : []),
+        ];
+        return [
+          `- id:${v.id} | ${v.name} | Business: ${v.business || "?"} | Category: ${v.category || "?"} | Specialty: ${v.specialty || "?"} | Invited by: ${v.invitedBy || "walk-in"}`,
+          `    DO NOT MATCH: ${banned.length ? banned.join(" ; ") : "(nothing blocked)"}`,
+          `    SAME CATEGORY, VERIFY BEFORE MATCHING: ${watches.length ? watches.map(c => `${c.member.name} (${c.member.specialty})`).join(" ; ") : "(none)"}`,
+        ].join("\n");
+      }).join("\n");
+
+      const askLines = openAsks.length === 0 ? "(none)" : openAsks.map(a => {
+        const m = members.find(mm => mm.id === a.memberId) ||
+                  members.find(mm => mm.name.toLowerCase() === (a.memberName || "").toLowerCase());
+        const who = m ? `${a.memberName} [sells: ${m.specialty}]` : a.memberName;
+        const want = [a.targetName, a.targetCompany, a.targetRole, a.targetCategory].filter(Boolean).join(" / ") || "?";
+        return `- ${who} wants an introduction to: ${want}${a.notes ? ` — "${a.notes}"` : ""}`;
+      }).join("\n");
+
       const memberLines = members.map(m => `- ${m.name} | ${m.category} | ${m.specialty}`).join("\n");
 
-      const prompt = `You are the introduction-matching engine for BNI Insomniacs, a BNI chapter in Dubai. For each visitor attending this week's meeting, recommend 1-3 chapter members they should be introduced to.
+      const prompt = `You are the introduction-matching engine for BNI Insomniacs, a BNI chapter in Dubai. For each visitor attending this week's meeting, recommend 0-3 chapter members they should be introduced to. A wrong introduction costs the chapter credibility, so returning fewer, better matches is always the right call.
 
 VISITORS THIS WEEK:
 ${visitorLines}
 
-OPEN MEMBER ASKS (highest priority — if a visitor could fulfil an ask, always match them):
+OPEN MEMBER ASKS — each ask describes the CLIENT or contact that member wants to be introduced to. It never describes another supplier of that member's own service:
 ${askLines}
 
 CHAPTER MEMBERS (only recommend names EXACTLY as written here):
 ${memberLines}
 
-MATCHING RULES:
-1. First priority: visitors who could fulfil an open ask → source "ask".
-2. Second priority: strong business synergy — complementary services, same client base, contact-sphere overlap, likely referral partners → source "synergy".
-3. Every visitor must get at least 1 match; give 2-3 where genuinely useful. Never invent member names.
-4. Do NOT match a visitor to the member who invited them.
-5. Keep each reason under 12 words, specific and actionable.
+MATCHING RULES — rules 1 and 2 are where bad matches come from, so apply them first.
+
+1. COMPETITOR TEST (hard rule). Ask yourself: "would these two ever bid for the same job?" If yes, they are competitors and a BNI classification conflict — never introduce them, no matter how well the words line up. This applies to asks as well: a freight-forwarding visitor does NOT fulfil a freight forwarder's ask for "companies struggling with shipments and logistics", because that ask is for shippers — manufacturers, traders, retailers, e-commerce — not for rival forwarders. Never recommend anyone listed under DO NOT MATCH for that visitor.
+
+2. DIRECTION TEST (hard rule). Every match needs one clear direction of business, and you must state it:
+   - "member_serves_visitor" — the visitor is a plausible CLIENT of the member (e.g. a cargo company buying cargo insurance).
+   - "visitor_serves_member" — the visitor could supply the member or the member's clients.
+   - "mutual_referral" — both serve the same client base without overlapping, so they can feed each other referrals.
+   If you cannot name who would buy from or refer to whom, there is no match. Do not describe a third party who is not one of the two people in this match.
+
+3. PRIORITY. (a) The visitor genuinely fulfils an open ask, direction and competitor tests both passing → source "ask". (b) Strong complementary synergy → source "synergy".
+
+4. REASON. Under 14 words, concrete, and about THESE TWO people. Good: "Cargo fleet needs marine and liability cover — Karan writes both". Bad: "Manufacturing and trading companies need freight forwarding partners" (that describes someone who is not in the match).
+
+5. CONFIDENCE. Score each match 0-100 for how likely it is to create real business. Leave out anything below 55. One excellent match beats three weak ones, and an empty introduceTo array is a perfectly good answer — use "note" to say why.
 
 Respond with ONLY valid JSON, no markdown, no preamble:
-{"matches":[{"visitorId":"<id exactly as given>","introduceTo":[{"memberName":"<exact member name>","reason":"<short reason>","source":"ask" or "synergy"}]}]}`;
+{"matches":[{"visitorId":"<id exactly as given>","introduceTo":[{"memberName":"<exact member name>","reason":"<short reason>","source":"ask" or "synergy","direction":"member_serves_visitor" or "visitor_serves_member" or "mutual_referral","confidence":<0-100>}],"note":"<optional: why this visitor has few or no matches>"}]}`;
 
       const result = await callClaude(prompt, 3000);
-      const memberNamesLower = members.map(m => m.name.toLowerCase());
+
+      const byName = new Map(members.map(m => [m.name.toLowerCase(), m]));
       const map = {};
-      (result.matches || []).forEach(m => {
-        const valid = (m.introduceTo || []).filter(x => x.memberName && memberNamesLower.includes(x.memberName.toLowerCase())).slice(0, 3);
-        if (valid.length) map[String(m.visitorId)] = valid;
+      let kept = 0, blocked = 0;
+
+      (result.matches || []).forEach(row => {
+        const visitor = printVisitors.find(v => String(v.id) === String(row.visitorId));
+        if (!visitor) return;
+        const conflicts = conflictIdSet(visitor, members);
+        const inviter = (visitor.invitedBy || "").trim().toLowerCase();
+        const seen = new Set();
+        const valid = [];
+        (row.introduceTo || []).forEach(x => {
+          const member = byName.get(String(x.memberName || "").trim().toLowerCase());
+          if (!member) { blocked++; return; }                                   // hallucinated name
+          if (conflicts.has(member.id)) { blocked++; return; }                  // competitor
+          if (inviter && member.name.toLowerCase() === inviter) { blocked++; return; } // their inviter
+          if (Number(x.confidence ?? 70) < 55) { blocked++; return; }           // weak match
+          if (seen.has(member.id)) return;                                      // duplicate
+          seen.add(member.id);
+          valid.push({
+            memberName: member.name,
+            reason: String(x.reason || "").trim(),
+            source: x.source === "ask" ? "ask" : "synergy",
+            direction: x.direction || "",
+            confidence: Number(x.confidence ?? 70),
+          });
+        });
+        valid.sort((a, b) => b.confidence - a.confidence);
+        map[String(visitor.id)] = valid.slice(0, 3);
+        kept += Math.min(valid.length, 3);
       });
+
+      // Any visitor the model skipped entirely still gets an explicit empty entry,
+      // so the sheet says "no strong match" instead of falling back to a weak guess.
+      printVisitors.forEach(v => { if (!(String(v.id) in map)) map[String(v.id)] = []; });
+
       setPrintMatches(prev => ({ ...prev, ...map }));
-      if (Object.keys(map).length === 0) setMatchError("AI returned no usable matches — try again.");
+      setMatchStats({ kept, blocked, empty: Object.values(map).filter(a => a.length === 0).length });
+      if (kept === 0) setMatchError("No match cleared the competitor and confidence checks — every visitor is listed for open networking instead.");
     } catch (e) {
       console.error("Print AI-Match failed:", e);
       setMatchError(e.message || "AI match failed — check the API key and model string.");
@@ -1916,6 +2103,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         const isExpanded = expandedId === v.id;
         const isEditing = editingId === v.id;
         const topMatch = findMatches(v, asks, members)[0];
+        const conflicts = findClashes(v, members).filter(c => c.level === "conflict");
         const verdict = v.validation?.verdict;
         const verdictBadge = verdict === "GREEN" ? { bg: "#D1FAE5", text: "#065F46", label: "✅ Green" } :
                              verdict === "AMBER" ? { bg: "#FEF3C7", text: "#92400E", label: "⚠️ Amber" } :
@@ -1969,13 +2157,16 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         }
 
         return (
-          <Card key={v.id} style={{ marginBottom: 8, padding: 12, border: v.bio ? "1px solid #C7D2FE" : "1px solid #E5E7EB" }}>
+          <Card key={v.id} style={{ marginBottom: 8, padding: 12, border: conflicts.length ? "1px solid #FCD34D" : v.bio ? "1px solid #C7D2FE" : "1px solid #E5E7EB" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 700, fontSize: 13 }}>{v.name}</div>
                   {v.bio && <span style={{ background: "#EEF2FF", color: "#4338CA", fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20 }}>✦ Briefed</span>}
                   {verdictBadge && <span style={{ background: verdictBadge.bg, color: verdictBadge.text, fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20 }}>{verdictBadge.label}</span>}
+                  {conflicts.length > 0 && <span title={conflicts.map(c => c.why).join(" · ")} style={{ background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20 }}>
+                    ⚠️ Competes with {conflicts.map(c => c.member.name.split(" ")[0]).join(", ")}
+                  </span>}
                   {topMatch && <span style={{ background: topMatch.score >= 70 ? "#FEF3C7" : "#DBEAFE", color: topMatch.score >= 70 ? "#92400E" : "#1E40AF", fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 20 }}>
                     → {topMatch.member?.name.split(" ")[0]}
                   </span>}
@@ -2051,7 +2242,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
           <button
             onClick={runPrintAIMatch}
             disabled={matchLoading || printVisitors.length === 0}
-            title="AI matches each visitor to members using open asks and the full member list"
+            title="AI matches each visitor to members using open asks and the full member list — competitors and the inviter are filtered out automatically"
             style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 8, padding: "9px 20px", fontSize: 13, fontWeight: 700, cursor: (matchLoading || printVisitors.length === 0) ? "wait" : "pointer", opacity: (matchLoading || printVisitors.length === 0) ? 0.6 : 1, minWidth: 160 }}>
             {matchLoading ? "🤖 Matching…" : Object.keys(printMatches).length > 0 ? "↺ Re-run AI Match" : "🤖 AI-Match Visitors"}
           </button>
@@ -2062,12 +2253,21 @@ Respond with ONLY valid JSON, no markdown, no preamble:
         {matchLoading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#5B21B6", fontSize: 12, marginTop: 10 }}>
             <div style={{ width: 14, height: 14, border: "2px solid #7C3AED", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            Matching {printVisitors.length} visitor{printVisitors.length !== 1 ? "s" : ""} against {asks.filter(a => a.status === "open").length} open asks and {members.length} members…
+            Matching {printVisitors.length} visitor{printVisitors.length !== 1 ? "s" : ""} against {asks.filter(a => a.status === "open").length} open asks and {members.length} members, with the competitor guard on…
           </div>
         )}
         {matchError && <div style={{ color: "#991B1B", fontSize: 12, marginTop: 8 }}>⚠️ {matchError}</div>}
         {!matchLoading && Object.keys(printMatches).length > 0 && (
-          <div style={{ fontSize: 11, color: "#166534", marginTop: 8 }}>✅ AI matches loaded — they now appear in the "BNI Matches — Introduce To" column below and in the print view. (Session only — re-run after a page refresh.)</div>
+          <div style={{ fontSize: 11, color: "#166534", marginTop: 8 }}>
+            ✅ AI matches loaded — they now appear in the "BNI Matches — Introduce To" column below and in the print view. (Session only — re-run after a page refresh.)
+            {matchStats && (
+              <div style={{ marginTop: 3, color: "#4B5563" }}>
+                🛡️ {matchStats.kept} introduction{matchStats.kept === 1 ? "" : "s"} passed the competitor, inviter and confidence checks
+                {matchStats.blocked > 0 ? ` · ${matchStats.blocked} suggestion${matchStats.blocked === 1 ? "" : "s"} blocked` : ""}
+                {matchStats.empty > 0 ? ` · ${matchStats.empty} visitor${matchStats.empty === 1 ? "" : "s"} marked for open networking` : ""}
+              </div>
+            )}
+          </div>
         )}
       </Card>
       <div style={{ border: "2px solid #E5E7EB", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
@@ -2107,7 +2307,7 @@ Respond with ONLY valid JSON, no markdown, no preamble:
 }
 
 // ═══════════════════════════════════════════
-// NEW: ARCHIVE TAB — month-based lookup
+// ARCHIVE TAB — month-based lookup
 // ═══════════════════════════════════════════
 function ArchiveTab({ archived, setArchived, visitors, setVisitors }) {
   const [filterMonth, setFilterMonth] = useState("all");
@@ -2448,7 +2648,8 @@ function AsksTab({ asks, setAsks, members }) {
       <div style={{ fontSize: 12, fontWeight: 700, color: "#4338CA", marginBottom: 4 }}>🎯 How Asks Work</div>
       <div style={{ fontSize: 11, color: "#3730A3", lineHeight: 1.6 }}>
         Record member asks each week from their 60-second presentations. Asks can be:<br/>
-        <strong>Specific Person</strong> — e.g. "Pallavi Dean from Roar" | <strong>Specific Company</strong> — e.g. "Pixl Global" | <strong>General Role</strong> — e.g. "CFOs of companies"
+        <strong>Specific Person</strong> — e.g. "Pallavi Dean from Roar" | <strong>Specific Company</strong> — e.g. "Pixl Global" | <strong>General Role</strong> — e.g. "CFOs of companies"<br/>
+        <em style={{ color: "#4338CA" }}>An ask always describes the CLIENT the member wants to meet — never another supplier of the same service. The matcher relies on that.</em>
       </div>
     </Card>
 
@@ -2482,11 +2683,12 @@ function AsksTab({ asks, setAsks, members }) {
           <input value={form.targetRole} onChange={e => setForm(p => ({...p, targetRole: e.target.value}))} style={{ width: "100%", padding: "5px 8px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} placeholder="e.g. CFOs of companies for ERP solutions" />
         </div>}
         <div>
-          <label style={{ fontSize: 10, fontWeight: 600 }}>Relevant Category</label>
+          <label style={{ fontSize: 10, fontWeight: 600 }}>Category the TARGET sits in</label>
           <select value={form.targetCategory} onChange={e => setForm(p => ({...p, targetCategory: e.target.value}))} style={{ width: "100%", padding: "5px 8px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12 }}>
             <option value="">Select category...</option>
             {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
+          <div style={{ fontSize: 9, color: "#6B7280", marginTop: 2 }}>Leave blank unless you mean the target's industry. Tagging your own category here is ignored by the matcher.</div>
         </div>
         <div><label style={{ fontSize: 10, fontWeight: 600 }}>Notes</label><input value={form.notes} onChange={e => setForm(p => ({...p, notes: e.target.value}))} style={{ width: "100%", padding: "5px 8px", border: "1px solid #D1D5DB", borderRadius: 6, fontSize: 12, boxSizing: "border-box" }} /></div>
       </div>
@@ -2518,12 +2720,15 @@ function AsksTab({ asks, setAsks, members }) {
 function AIMatchTab({ visitors, asks, members }) {
   const [selectedVisitor, setSelectedVisitor] = useState(null);
   const matches = selectedVisitor ? findMatches(selectedVisitor, asks, members) : [];
+  const clashes = selectedVisitor ? findClashes(selectedVisitor, members) : [];
+  const conflicts = clashes.filter(c => c.level === "conflict");
+  const watches = clashes.filter(c => c.level === "watch");
 
   return <div>
     <Card style={{ marginBottom: 12, background: "#F5F3FF", borderColor: "#8B5CF6" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#5B21B6", marginBottom: 4 }}>🤖 AI Visitor-Member Matching</div>
       <div style={{ fontSize: 11, color: "#6D28D9", lineHeight: 1.6 }}>
-        Select a visitor to see which members they should meet based on open asks, Contact Sphere category matches, and specialty relevance.
+        Select a visitor to see which members they should meet, based on open asks and Contact Sphere relevance. Members who do the <strong>same work</strong> as the visitor are excluded from the match list and shown separately as a classification clash — a competitor is not a referral partner.
       </div>
     </Card>
 
@@ -2552,8 +2757,31 @@ function AIMatchTab({ visitors, asks, members }) {
         </div>
       </Card>
 
+      {conflicts.length > 0 && (
+        <Card style={{ marginBottom: 12, background: "#FEF2F2", borderColor: "#F87171" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#991B1B", marginBottom: 6 }}>🛑 Classification clash — do not introduce as a referral</div>
+          {conflicts.map((c, i) => (
+            <div key={i} style={{ fontSize: 11, color: "#7F1D1D", lineHeight: 1.6, marginBottom: 3 }}>
+              • <strong>{c.member.name}</strong> — {c.member.specialty}. This visitor is a <strong>competitor</strong>, not a prospect: {c.why}.
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, background: "#fff", borderRadius: 6, padding: "6px 9px" }}>
+            💬 Tell {conflicts[0].member.name.split(" ")[0]} before the meeting, and treat the visitor as a guest rather than a membership prospect for this classification.
+          </div>
+        </Card>
+      )}
+
+      {watches.length > 0 && (
+        <Card style={{ marginBottom: 12, background: "#FFFBEB", borderColor: "#FCD34D" }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>⚠️ Same category — check for overlap before introducing</div>
+          <div style={{ fontSize: 11, color: "#92400E", lineHeight: 1.6 }}>
+            {watches.map(c => `${c.member.name} (${c.member.specialty})`).join(" · ")}
+          </div>
+        </Card>
+      )}
+
       <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>🎯 Matches Found: {matches.length}</div>
-      {matches.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF" }}>No matches found.</div>}
+      {matches.length === 0 && <div style={{ fontSize: 12, color: "#9CA3AF" }}>No clean match found — introduce during open networking rather than forcing a pairing.</div>}
       {matches.map((m, i) => (
         <Card key={i} style={{ marginBottom: 8, padding: 12, borderLeft: `4px solid ${m.score >= 90 ? "#EF4444" : m.score >= 70 ? "#F59E0B" : "#3B82F6"}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -2583,7 +2811,7 @@ function AIMatchTab({ visitors, asks, members }) {
 }
 
 // ═══════════════════════════════════════════
-// UPGRADED: MEMBERS TAB — add, edit, delete members
+// MEMBERS TAB — add, edit, delete members
 // ═══════════════════════════════════════════
 function MembersTab({ members, setMembers }) {
   const [search, setSearch] = useState("");
@@ -2638,6 +2866,12 @@ function MembersTab({ members, setMembers }) {
         onConfirm={doDelete}
         onCancel={() => setConfirmDelete(null)}
       />
+
+      <Card style={{ marginBottom: 12, background: "#EEF2FF", borderColor: "#818CF8" }}>
+        <div style={{ fontSize: 11, color: "#3730A3", lineHeight: 1.6 }}>
+          💡 Specialties drive the competitor guard. A precise specialty (e.g. "Freight Forwarding/Logistics") lets the matcher block competitors; a placeholder like "Transport & Shipping Specialist" only produces a soft warning. Sharpening these is the single best way to improve match quality.
+        </div>
+      </Card>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
         <span style={{ fontWeight: 700, fontSize: 15 }}>Chapter Members ({members.length})</span>
@@ -2699,7 +2933,9 @@ function MembersTab({ members, setMembers }) {
           <div key={m.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, color: "#111" }}>{m.name}</div>
-              <div style={{ fontSize: 11, color: "#6B7280" }}>{m.specialty}</div>
+              <div style={{ fontSize: 11, color: isPlaceholderSpecialty(m.specialty) ? "#B45309" : "#6B7280" }}>
+                {m.specialty}{isPlaceholderSpecialty(m.specialty) ? " — placeholder, sharpen for better matching" : ""}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
               <Badge bg="#F3F4F6" text="#374151" label={m.category} />
@@ -2755,6 +2991,8 @@ function FollowUpTab({ visitors, setVisitors }) {
 
 // ═══════════════════════════════════════════
 // CONNECTION ENGINE — ask aging, AI weekly digest, member 1-2-1 pairings
+// v6.8: the digest obeys the same competitor rule as the print matcher, and
+// reports classification clashes instead of dressing them up as connections.
 // ═══════════════════════════════════════════
 function ConnectionEngineTab({ visitors, asks, members }) {
   const [digest, setDigest] = useState(null);
@@ -2775,12 +3013,20 @@ function ConnectionEngineTab({ visitors, asks, members }) {
   const generate = async () => {
     setLoading(true); setError(null); setCopied(false);
     try {
+      const clashLines = thisWeek.flatMap(v =>
+        findClashes(v, members).filter(c => c.level === "conflict")
+          .map(c => `- ${v.name} (${v.specialty || v.business}) COMPETES WITH ${c.member.name} (${c.member.specialty}) — never present as a connection`)
+      ).join("\n");
+
       const prompt = `You are the connection strategist for BNI Insomniacs, a BNI chapter in Dubai. The Visitor Host needs this week's connection digest before the Wednesday meeting on ${MEETING_DATE}.
 
 THIS WEEK'S VISITORS (${thisWeek.length}):
 ${thisWeek.length ? thisWeek.map(v => `- ${v.name} | ${v.business || "no company"} | ${v.category || "no category"} / ${v.specialty || ""} | status: ${v.status} | invited by: ${v.invitedBy || "unknown"} | notes: ${v.callNotes || "none"}`).join("\n") : "(none registered yet)"}
 
-ACTIVE OPEN ASKS — last 6 weeks (${activeAsks.length}):
+BLOCKED PAIRS — computed by the app from the live roster:
+${clashLines || "(none)"}
+
+ACTIVE OPEN ASKS — last 6 weeks (${activeAsks.length}). Each ask describes the CLIENT that member wants to meet, never another supplier of the member's own service:
 ${activeAsks.map(a => `- ${a.memberName} (open ${daysOpen(a.date)} days): wants ${askSummary(a) || a.targetCategory}`).join("\n") || "(none)"}
 
 ARCHIVED ASKS — older than 6 weeks, no longer actively pursued (${archivedAsks.length}):
@@ -2791,6 +3037,8 @@ ${members.map(m => `${m.name} — ${m.category} / ${m.specialty}`).join("\n")}
 
 Think like a master networker: match visitors to asks AND to members who would naturally refer business to each other (contact spheres, supply chains, shared client types — connections can cross categories). Also pair members whose open asks or specialties complement each other for 1-2-1 meetings.
 
+COMPETITOR RULE (hard, apply before anything else): never pair a visitor with a member who does the same work. That is a BNI classification conflict, not a referral — a freight-forwarding visitor does not answer a freight forwarder's ask for companies with shipping problems, because that ask is for shippers. Put every such pair in classificationClashes and keep it out of visitorMatches. For every match you do make, be able to say who would buy from or refer to whom.
+
 ARCHIVED ASK RULE: match visitors primarily against ACTIVE asks. But also scan the ARCHIVED asks — if this week's visitor fits an archived ask, or even comes close, that is gold: flag it as a revival so the Visitor Host can tell the member their old ask just walked through the door. Only include genuine fits.
 
 STRICT RULES:
@@ -2799,13 +3047,14 @@ STRICT RULES:
 - Respond with ONLY a JSON object, no markdown fences, no preamble, in exactly this shape:
 {
   "headline": "One energising sentence summarising this week's biggest connection opportunity",
-  "visitorMatches": [{ "visitorName": "...", "members": ["member name", "member name"], "reason": "specific, concrete reason (max 30 words)" }],
+  "visitorMatches": [{ "visitorName": "...", "members": ["member name", "member name"], "reason": "specific, concrete reason naming who refers or buys what (max 30 words)" }],
+  "classificationClashes": [{ "visitorName": "...", "memberName": "...", "note": "one line the Visitor Host can say to the member (max 20 words)" }],
   "archivedAskRevivals": [{ "visitorName": "...", "memberName": "...", "askSummary": "what the member originally asked for", "reason": "why this visitor fits or comes close (max 25 words)" }],
   "oneToOnes": [{ "memberA": "...", "memberB": "...", "reason": "why this 1-2-1 makes business sense right now (max 30 words)" }],
   "askInsights": ["short observation about the open asks, e.g. which are going stale or which categories dominate (max 3 items)"],
   "whatsappMessage": "A short, friendly pre-meeting message (with a couple of emoji) for the chapter leadership WhatsApp group summarising the top visitor-member connections, any archived-ask revival, and one suggested 1-2-1. Plain text, under 120 words."
 }
-archivedAskRevivals must be an empty array if nothing genuinely fits. Include every visitor in visitorMatches (best-effort matches, empty members array if truly nothing fits). Give 3 to 5 oneToOnes.`;
+archivedAskRevivals and classificationClashes must be empty arrays if nothing applies. Include every visitor in visitorMatches (empty members array if nothing genuinely fits — say so rather than forcing a match). Give 3 to 5 oneToOnes.`;
 
       const parsed = await callClaude(prompt, 2000);
       setDigest(parsed);
@@ -2830,7 +3079,7 @@ archivedAskRevivals must be an empty array if nothing genuinely fits. Include ev
     <Card style={{ marginBottom: 12, background: "#F5F3FF", borderColor: "#8B5CF6" }}>
       <div style={{ fontSize: 12, fontWeight: 700, color: "#5B21B6", marginBottom: 4 }}>🔗 Connection Engine</div>
       <div style={{ fontSize: 11, color: "#6D28D9", lineHeight: 1.6 }}>
-        Turns your weekly asks data into action: which visitors can close open asks, which members should book a 1-2-1, and which asks are going stale — plus a ready-to-send WhatsApp digest for chapter leadership. Asks auto-archive after 6 weeks but the AI still watches them for visitor matches.
+        Turns your weekly asks data into action: which visitors can close open asks, which members should book a 1-2-1, and which asks are going stale — plus a ready-to-send WhatsApp digest for chapter leadership. Asks auto-archive after 6 weeks but the AI still watches them for visitor matches. Competitors are reported as classification clashes, never as connections.
       </div>
     </Card>
 
@@ -2901,6 +3150,16 @@ archivedAskRevivals must be an empty array if nothing genuinely fits. Include ev
               {vm.members?.length > 0 && <span style={{ color: "#5B21B6" }}>{vm.members.join(", ")}</span>}
             </div>
             <div style={{ fontSize: 12, color: "#374151" }}>{vm.members?.length ? vm.reason : "No strong match this week — introduce during open networking."}</div>
+          </Card>
+        ))}
+      </>}
+
+      {digest.classificationClashes?.length > 0 && <>
+        <div style={{ fontWeight: 700, fontSize: 13, margin: "14px 0 8px" }}>🛑 Classification Clashes</div>
+        {digest.classificationClashes.map((cc, i) => (
+          <Card key={i} style={{ marginBottom: 8, padding: 12, borderLeft: "4px solid #EF4444", background: "#FEF2F2" }}>
+            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>{cc.visitorName} <span style={{ color: "#991B1B" }}>competes with</span> {cc.memberName}</div>
+            <div style={{ fontSize: 12, color: "#374151" }}>{cc.note}</div>
           </Card>
         ))}
       </>}
@@ -3017,7 +3276,7 @@ export default function App() {
   return <div style={{ fontFamily: "'Segoe UI', -apple-system, sans-serif", background: "#F9FAFB", minHeight: "100vh" }}>
     <div style={{ background: "linear-gradient(135deg, #8B1A1A 0%, #1B2A4A 100%)", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
       <div>
-        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.7</span></div>
+        <div style={{ color: "#fff", fontSize: 17, fontWeight: 800, letterSpacing: -0.5 }}>BNI Insomniacs <span style={{ fontSize: 10, fontWeight: 700, background: "rgba(255,255,255,0.2)", padding: "2px 6px", borderRadius: 8, marginLeft: 6, verticalAlign: "middle" }}>v6.8</span></div>
         <div style={{ color: "#FFD4D4", fontSize: 10 }}>Visitor Host Command Centre • {members.length} Members</div>
       </div>
       <div style={{ display: "flex", gap: 12, color: "#FFD4D4", fontSize: 11 }}>
